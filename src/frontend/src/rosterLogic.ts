@@ -58,9 +58,9 @@ export function generateRoster(
   const secondLayer = staff.filter(
     (s) => s.active && (s.role === "Registrar" || s.role === "JC"),
   );
-  // Third layer: SC or JC — SCs are preferred to avoid JC double-duty
-  const thirdLayerSCs = staff.filter((s) => s.active && s.role === "SC");
-  const thirdLayerJCs = staff.filter((s) => s.active && s.role === "JC");
+  const thirdLayer = staff.filter(
+    (s) => s.active && (s.role === "SC" || s.role === "JC"),
+  );
 
   // Track state per person
   const lastDutyDay = new Map<string, number>();
@@ -112,38 +112,56 @@ export function generateRoster(
     const eligiblePGs = sortCandidates(pgs.filter(isEligible));
     const assignedPG = eligiblePGs[0] ?? null;
 
-    // Assign Second Layer (Registrar or JC)
+    // Assign Second Layer
     const eligibleSecond = sortCandidates(secondLayer.filter(isEligible));
     const assignedSecond = eligibleSecond[0] ?? null;
 
-    // Assign Third Layer (SC or JC) — MANDATORY every day.
-    // Prefer SCs first to avoid JC double-duty.
-    // Exclude anyone already assigned to second layer.
-    const excludeId = assignedSecond?.id;
-    const eligibleSCsForThird = sortCandidates(
-      thirdLayerSCs.filter((s) => isEligible(s) && s.id !== excludeId),
-    );
-    let assignedThird: Staff | null = eligibleSCsForThird[0] ?? null;
-
-    if (!assignedThird) {
-      // No SC available — fall back to JC (different person from second layer)
-      const eligibleJCsForThird = sortCandidates(
-        thirdLayerJCs.filter((s) => isEligible(s) && s.id !== excludeId),
+    // Assign Third Layer
+    let assignedThird: Staff | null = null;
+    if (assignedSecond && assignedSecond.role === "JC") {
+      // JC on second layer — avoid third layer
+      assignedThird = null;
+    } else {
+      const eligibleThird = sortCandidates(
+        thirdLayer.filter((s) => isEligible(s) && s.id !== assignedSecond?.id),
       );
-      assignedThird = eligibleJCsForThird[0] ?? null;
+      assignedThird = eligibleThird[0] ?? null;
     }
 
     // Update tracking
-    const updateTracking = (s: Staff | null) => {
-      if (!s) return;
-      lastDutyDay.set(s.id, day);
-      dutyCount.set(s.id, (dutyCount.get(s.id) ?? 0) + 1);
+    if (assignedPG) {
+      lastDutyDay.set(assignedPG.id, day);
+      dutyCount.set(assignedPG.id, (dutyCount.get(assignedPG.id) ?? 0) + 1);
       if (dayIsHolidayOrPre)
-        holidayDutyCount.set(s.id, (holidayDutyCount.get(s.id) ?? 0) + 1);
-    };
-    updateTracking(assignedPG);
-    updateTracking(assignedSecond);
-    updateTracking(assignedThird);
+        holidayDutyCount.set(
+          assignedPG.id,
+          (holidayDutyCount.get(assignedPG.id) ?? 0) + 1,
+        );
+    }
+    if (assignedSecond) {
+      lastDutyDay.set(assignedSecond.id, day);
+      dutyCount.set(
+        assignedSecond.id,
+        (dutyCount.get(assignedSecond.id) ?? 0) + 1,
+      );
+      if (dayIsHolidayOrPre)
+        holidayDutyCount.set(
+          assignedSecond.id,
+          (holidayDutyCount.get(assignedSecond.id) ?? 0) + 1,
+        );
+    }
+    if (assignedThird) {
+      lastDutyDay.set(assignedThird.id, day);
+      dutyCount.set(
+        assignedThird.id,
+        (dutyCount.get(assignedThird.id) ?? 0) + 1,
+      );
+      if (dayIsHolidayOrPre)
+        holidayDutyCount.set(
+          assignedThird.id,
+          (holidayDutyCount.get(assignedThird.id) ?? 0) + 1,
+        );
+    }
 
     entries.push({
       day: BigInt(day),
@@ -156,6 +174,7 @@ export function generateRoster(
   }
 
   // Validation pass
+  // Rebuild counts for validation
   const finalDutyCounts = new Map<string, number>();
   const finalHolidayCounts = new Map<string, number>();
   const allAssigned: Array<{ day: number; staffId: string }> = [];
@@ -178,12 +197,8 @@ export function generateRoster(
     const day = Number(entry.day);
     const flags: string[] = [];
 
-    // Hard coverage rules — all three layers are mandatory
     if (!entry.pgId) flags.push("No PG assigned");
-    if (!entry.secondLayerId)
-      flags.push("No Second Layer (Registrar/JC) assigned");
-    if (!entry.thirdLayerId)
-      flags.push("No Third Layer (Senior Consultant) assigned");
+    if (!entry.secondLayerId) flags.push("No Second Layer assigned");
 
     // JC double duty
     if (
@@ -196,7 +211,7 @@ export function generateRoster(
       flags.push(`JC double duty: ${name} is on both Second and Third Layer`);
     }
 
-    const checkFlags = (id: string) => {
+    const checkFlags = (id: string, _role?: string) => {
       if (!id) return;
       const s = staffById.get(id);
       const name = s?.name ?? id;
@@ -239,9 +254,9 @@ export function generateRoster(
       }
     };
 
-    checkFlags(entry.pgId);
-    checkFlags(entry.secondLayerId);
-    checkFlags(entry.thirdLayerId);
+    checkFlags(entry.pgId, "PG");
+    checkFlags(entry.secondLayerId, "Second Layer");
+    checkFlags(entry.thirdLayerId, "Third Layer");
 
     entry.flags = flags;
   }
