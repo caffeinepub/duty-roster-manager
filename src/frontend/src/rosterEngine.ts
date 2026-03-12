@@ -311,33 +311,47 @@ export function generateRoster(
     // Determine if a JC is covering layer 2
     const regStaff = regId ? staffById.get(regId) : null;
     const jcCoversLayer2 = regStaff?.role === "JC";
+    const registrarCoversLayer2 = regStaff?.role === "Registrar";
     if (jcCoversLayer2) jcInLayer2Dates.add(date);
 
-    // Assign SC — SKIP entirely if a JC is covering layer 2
+    // Assign SC
+    // RULE: When a Registrar covers layer 2, SC is MANDATORY and cannot be cleared.
+    //       Clearing SC (overrideSc === null) is only valid when a JC covers layer 2.
     let scName: string | null = null;
     let scId: string | null = null;
-    if (overrideSc !== undefined) {
+
+    if (overrideSc !== undefined && overrideSc !== null) {
+      // Override to a specific person — always allowed
       scName = overrideSc;
       scId = staff.find((s) => s.name === overrideSc)?.id ?? null;
-    } else if (!jcCoversLayer2) {
-      const eligible = sortByFairness(
-        scsJCs.filter(
-          (s) =>
-            isEligible(
-              s,
-              date,
-              isHolOrPre,
-              regId ?? undefined,
-              isFriday,
-              isSaturday,
-            ) && s.id !== pgId,
-        ),
-        date,
-        isFriday,
-      );
-      if (eligible.length > 0) {
-        scId = eligible[0].id;
-        scName = eligible[0].name;
+    } else if (overrideSc === null && !registrarCoversLayer2) {
+      // Clearing SC is only valid if a JC is covering layer 2
+      scName = null;
+      scId = null;
+    } else {
+      // Auto-assign SC if:
+      //   (a) no override at all, OR
+      //   (b) override tried to clear SC but a Registrar is on duty (override silently dropped)
+      if (!jcCoversLayer2) {
+        const eligible = sortByFairness(
+          scsJCs.filter(
+            (s) =>
+              isEligible(
+                s,
+                date,
+                isHolOrPre,
+                regId ?? undefined,
+                isFriday,
+                isSaturday,
+              ) && s.id !== pgId,
+          ),
+          date,
+          isFriday,
+        );
+        if (eligible.length > 0) {
+          scId = eligible[0].id;
+          scName = eligible[0].name;
+        }
       }
     }
 
@@ -391,12 +405,11 @@ export function generateRoster(
   const dutyDates = new Map<string, string[]>();
 
   for (const row of roster) {
-    const isHolOrPre = isHolidayDate(row.date) || isPreHolidayDate(row.date);
     const dow = new Date(`${row.date}T00:00:00`).getDay();
     for (const name of [row.pg, row.registrarJC, row.seniorConsultant]) {
       if (!name) continue;
       finalDutyCount.set(name, (finalDutyCount.get(name) ?? 0) + 1);
-      if (isHolOrPre)
+      if (isHolidayDate(row.date))
         finalHolCount.set(name, (finalHolCount.get(name) ?? 0) + 1);
       if (dow === 5)
         finalFridayCount.set(name, (finalFridayCount.get(name) ?? 0) + 1);
@@ -409,13 +422,20 @@ export function generateRoster(
 
   for (const row of roster) {
     const flags: string[] = [...row.flags];
-    const isHolOrPre = isHolidayDate(row.date) || isPreHolidayDate(row.date);
     const dow = new Date(`${row.date}T00:00:00`).getDay();
 
     if (!row.pg) flags.push("Missing PG");
     if (!row.registrarJC) flags.push("Missing Registrar/JC");
     const jcInLayer2 = jcInLayer2Dates.has(row.date);
     if (!row.seniorConsultant && !jcInLayer2) flags.push("Missing SC");
+
+    // Extra safety: if SC is missing but a Registrar is on duty, flag it
+    const layer2StaffMember = row.registrarJC
+      ? staff.find((s) => s.name === row.registrarJC)
+      : null;
+    if (!row.seniorConsultant && layer2StaffMember?.role === "Registrar") {
+      flags.push("Missing SC (required when Registrar on duty)");
+    }
 
     const checkPerson = (name: string | null) => {
       if (!name) return;
@@ -432,7 +452,7 @@ export function generateRoster(
       }
 
       // Holiday overload
-      if (isHolOrPre) {
+      if (isHolidayDate(row.date)) {
         const hCount = finalHolCount.get(name) ?? 0;
         if (hCount > 1) flags.push(`${name}: holiday duty overload`);
       }

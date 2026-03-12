@@ -33,7 +33,13 @@ import {
   WidthType,
 } from "docx";
 import { saveAs } from "file-saver";
-import { AlignLeft, ClipboardList, Printer, RefreshCw } from "lucide-react";
+import {
+  AlignLeft,
+  ClipboardList,
+  Lock,
+  Printer,
+  RefreshCw,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -77,6 +83,7 @@ interface OverrideCellProps {
   candidates: StaffMember[];
   onSelect: (name: string | null) => void;
   highlightRole?: "pg" | "reg" | "sc";
+  locked?: boolean;
 }
 
 function OverrideCell({
@@ -84,6 +91,7 @@ function OverrideCell({
   candidates,
   onSelect,
   highlightRole,
+  locked,
 }: OverrideCellProps) {
   const [editing, setEditing] = useState(false);
 
@@ -91,14 +99,22 @@ function OverrideCell({
     return (
       <button
         type="button"
-        className="cursor-pointer hover:underline hover:text-primary transition-colors text-left bg-transparent border-0 p-0"
+        className="cursor-pointer hover:underline hover:text-primary transition-colors text-left bg-transparent border-0 p-0 flex items-center gap-1"
         onClick={() => setEditing(true)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") setEditing(true);
         }}
-        title="Click to override"
+        title={
+          locked ? "SC required when Registrar is on duty" : "Click to override"
+        }
       >
         {value ?? <span className="text-destructive/70 italic text-xs">—</span>}
+        {locked && (
+          <Lock
+            className="h-3 w-3 text-amber-500 shrink-0"
+            aria-label="SC required when Registrar is on duty"
+          />
+        )}
       </button>
     );
   }
@@ -131,7 +147,8 @@ function OverrideCell({
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="__none__">— Unassigned —</SelectItem>
+        {/* Only show Unassigned option when SC is NOT required (i.e. JC in layer 2) */}
+        {!locked && <SelectItem value="__none__">— Unassigned —</SelectItem>}
         {sorted.map((s) => (
           <SelectItem key={s.id} value={s.name}>
             {s.name} ({s.role})
@@ -552,6 +569,13 @@ export function RosterTab() {
                   const isSpecial = isHolidayOrSunday(row.date, holidays);
                   const isPre = !isSpecial && isPreHoliday(row.date, holidays);
                   const day = new Date(`${row.date}T00:00:00`).getDate();
+
+                  // Determine if the layer-2 person is a Registrar
+                  const layer2Staff = staff.find(
+                    (s) => s.name === row.registrarJC,
+                  );
+                  const registrarInLayer2 = layer2Staff?.role === "Registrar";
+
                   return (
                     <tr
                       key={row.date}
@@ -609,6 +633,7 @@ export function RosterTab() {
                           value={row.seniorConsultant}
                           candidates={staff}
                           highlightRole="sc"
+                          locked={registrarInLayer2}
                           onSelect={(name) =>
                             handleOverride(row.date, "sc", name)
                           }
