@@ -1,21 +1,37 @@
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Loader2, Plus, X } from "lucide-react";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
+import type { Holiday } from "@/types";
+import { Calendar as CalendarIcon, PlusCircle, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import {
-  useAddHoliday,
-  useListHolidays,
-  useRemoveHoliday,
-} from "../hooks/useQueries";
+
+function genId(): string {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function toISO(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 const MONTHS = [
   "January",
@@ -34,215 +50,205 @@ const MONTHS = [
 
 export function HolidaysTab() {
   const now = new Date();
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth() + 1);
-  const [addDay, setAddDay] = useState("");
+  const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [viewMonth, setViewMonth] = useState(now.getMonth() + 1);
+  const [holidays, setHolidays] = useLocalStorage<Holiday[]>(
+    "duty_roster_holidays",
+    [],
+  );
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+  const [calOpen, setCalOpen] = useState(false);
+  const [newName, setNewName] = useState("");
 
-  const { data: holidays = [], isLoading } = useListHolidays(year, month);
-  const addHoliday = useAddHoliday();
-  const removeHoliday = useRemoveHoliday();
+  const filtered = holidays.filter((h) => {
+    const d = new Date(`${h.date}T00:00:00`);
+    return d.getFullYear() === viewYear && d.getMonth() + 1 === viewMonth;
+  });
 
-  const years = [
-    now.getFullYear() - 1,
-    now.getFullYear(),
-    now.getFullYear() + 1,
-  ];
-  const daysInMonth = new Date(year, month, 0).getDate();
-
-  const sundaysInMonth: number[] = [];
-  const saturdaysInMonth: number[] = [];
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dow = new Date(year, month - 1, d).getDay();
-    if (dow === 0) sundaysInMonth.push(d);
-    if (dow === 6) saturdaysInMonth.push(d);
-  }
-
-  const handleAdd = async () => {
-    const dayNum = Number.parseInt(addDay);
-    if (!dayNum || dayNum < 1 || dayNum > daysInMonth) {
-      toast.error(`Please select a valid day (1-${daysInMonth})`);
+  const handleAdd = () => {
+    if (!selectedDate) {
+      toast.error("Select a date");
       return;
     }
-    if (holidays.some((h) => Number(h.day) === dayNum)) {
-      toast.error("This day is already a statutory holiday");
+    if (!newName.trim()) {
+      toast.error("Enter a holiday name");
       return;
     }
-    try {
-      await addHoliday.mutateAsync({
-        day: BigInt(dayNum),
-        month: BigInt(month),
-        year: BigInt(year),
-      });
-      toast.success(`Day ${dayNum} added as statutory holiday`);
-      setAddDay("");
-    } catch {
-      toast.error("Failed to add holiday");
+    const dateStr = toISO(selectedDate);
+    if (holidays.find((h) => h.date === dateStr)) {
+      toast.error("Holiday already exists for this date");
+      return;
     }
+    setHolidays((prev) => [
+      ...prev,
+      { id: genId(), date: dateStr, name: newName.trim() },
+    ]);
+    toast.success("Holiday added");
+    setSelectedDate(undefined);
+    setNewName("");
   };
 
-  const handleRemove = async (index: number) => {
-    try {
-      await removeHoliday.mutateAsync({ index, year, month });
-      toast.success("Holiday removed");
-    } catch {
-      toast.error("Failed to remove holiday");
-    }
+  const handleDelete = (id: string) => {
+    setHolidays((prev) => prev.filter((h) => h.id !== id));
+    toast.success("Holiday removed");
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-4">
       <div>
-        <h2 className="text-2xl font-display font-semibold tracking-tight">
-          Statutory Holidays
-        </h2>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Define public holidays per month. Sundays are always holidays;
-          Saturdays are pre-holidays.
+        <h2 className="font-display text-xl font-semibold">Holidays</h2>
+        <p className="text-sm text-muted-foreground">
+          Statutory holidays. Sundays are automatically treated as holidays.
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-3 items-end p-4 bg-card rounded-lg border shadow-card">
-        <div className="space-y-1.5">
-          <Label>Year</Label>
-          <Select
-            value={String(year)}
-            onValueChange={(v) => setYear(Number(v))}
+      {/* Month/Year selector */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Label htmlFor="hol-month">Month</Label>
+          <select
+            id="hol-month"
+            data-ocid="holidays.select"
+            value={viewMonth}
+            onChange={(e) => setViewMonth(Number(e.target.value))}
+            className="border rounded-md px-3 py-1.5 text-sm bg-background"
           >
-            <SelectTrigger className="w-28">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {years.map((y) => (
-                <SelectItem key={y} value={String(y)}>
-                  {y}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            {MONTHS.map((m, i) => (
+              <option key={m} value={i + 1}>
+                {m}
+              </option>
+            ))}
+          </select>
         </div>
-        <div className="space-y-1.5">
-          <Label>Month</Label>
-          <Select
-            data-ocid="holidays.month.select"
-            value={String(month)}
-            onValueChange={(v) => setMonth(Number(v))}
-          >
-            <SelectTrigger className="w-36">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MONTHS.map((m) => (
-                <SelectItem key={m} value={String(MONTHS.indexOf(m) + 1)}>
-                  {m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="hol-year">Year</Label>
+          <Input
+            id="hol-year"
+            data-ocid="holidays.input"
+            type="number"
+            value={viewYear}
+            onChange={(e) => setViewYear(Number(e.target.value))}
+            className="w-24"
+          />
         </div>
-        <div className="space-y-1.5">
-          <Label>Add Statutory Holiday</Label>
-          <Select value={addDay} onValueChange={setAddDay}>
-            <SelectTrigger className="w-32">
-              <SelectValue placeholder="Day..." />
-            </SelectTrigger>
-            <SelectContent>
-              {Array.from({ length: daysInMonth }, (_, i) => i + 1).map((d) => (
-                <SelectItem key={d} value={String(d)}>
-                  Day {d}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <Button
-          data-ocid="holidays.add_button"
-          onClick={handleAdd}
-          disabled={!addDay || addHoliday.isPending}
-        >
-          {addHoliday.isPending ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <Plus className="mr-2 h-4 w-4" />
-          )}
-          Add Holiday
-        </Button>
       </div>
 
-      <div className="p-5 bg-card rounded-lg border shadow-card space-y-4">
-        <h3 className="font-display font-semibold">
-          Statutory Holidays — {MONTHS[month - 1]} {year}
-        </h3>
-        {isLoading ? (
-          <div className="flex justify-center py-6">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        ) : (
-          <>
-            {holidays.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-2">
-                No statutory holidays defined for this month.
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {holidays.map((h, i) => (
-                  <Badge
-                    key={Number(h.day)}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">
+            Add Holiday for {MONTHS[viewMonth - 1]} {viewYear}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-3 flex-wrap">
+            <div className="space-y-1.5 flex-1 min-w-36">
+              <Label>Date</Label>
+              <Popover open={calOpen} onOpenChange={setCalOpen}>
+                <PopoverTrigger asChild>
+                  <Button
                     variant="outline"
-                    className="flag-badge border-orange-200 pl-3 pr-1.5 py-1 text-sm gap-2 flex items-center"
+                    className="w-full justify-start font-normal"
+                    data-ocid="holidays.input"
                   >
-                    <span>Day {Number(h.day)}</span>
-                    <button
-                      type="button"
-                      data-ocid={`holidays.remove_button.${i + 1}`}
-                      onClick={() => handleRemove(i)}
-                      className="rounded-sm hover:bg-black/10 p-0.5 transition-colors"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </Badge>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </div>
+                    <CalendarIcon className="h-4 w-4 mr-2 opacity-60" />
+                    {selectedDate ? toISO(selectedDate) : "Pick a date"}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={selectedDate}
+                    onSelect={(d) => {
+                      setSelectedDate(d);
+                      setCalOpen(false);
+                    }}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+            <div className="space-y-1.5 flex-1 min-w-48">
+              <Label>Holiday Name</Label>
+              <Input
+                data-ocid="holidays.input"
+                placeholder="e.g. National Day"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+              />
+            </div>
+            <div className="flex items-end">
+              <Button onClick={handleAdd} data-ocid="holidays.primary_button">
+                <PlusCircle className="h-4 w-4 mr-2" /> Add Holiday
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="p-4 bg-card rounded-lg border shadow-card">
-          <h4 className="font-semibold text-sm mb-2 flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-red-400 inline-block" />
-            Sundays (Auto Holidays)
-          </h4>
-          <div className="flex flex-wrap gap-1.5">
-            {sundaysInMonth.map((d) => (
-              <Badge
-                key={d}
-                variant="outline"
-                className="bg-red-50 text-red-700 border-red-200 text-xs"
-              >
-                Day {d}
-              </Badge>
-            ))}
-          </div>
+      {filtered.length === 0 ? (
+        <div
+          data-ocid="holidays.empty_state"
+          className="flex flex-col items-center justify-center py-12 text-center border-2 border-dashed rounded-lg"
+        >
+          <CalendarIcon className="h-8 w-8 text-muted-foreground/40 mb-3" />
+          <p className="text-muted-foreground text-sm">
+            No statutory holidays for {MONTHS[viewMonth - 1]} {viewYear}.
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Sundays are automatically holidays.
+          </p>
         </div>
-        <div className="p-4 bg-card rounded-lg border shadow-card">
-          <h4 className="font-semibold text-sm mb-2 flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-amber-400 inline-block" />
-            Saturdays (Pre-Holidays)
-          </h4>
-          <div className="flex flex-wrap gap-1.5">
-            {saturdaysInMonth.map((d) => (
-              <Badge
-                key={d}
-                variant="outline"
-                className="bg-amber-50 text-amber-700 border-amber-200 text-xs"
-              >
-                Day {d}
-              </Badge>
-            ))}
-          </div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <Table data-ocid="holidays.table">
+            <TableHeader>
+              <TableRow className="bg-muted/40">
+                <TableHead>Date</TableHead>
+                <TableHead>Day</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead className="w-16" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered
+                .sort((a, b) => a.date.localeCompare(b.date))
+                .map((h, i) => {
+                  const d = new Date(`${h.date}T00:00:00`);
+                  const dow = [
+                    "Sunday",
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Saturday",
+                  ][d.getDay()];
+                  return (
+                    <TableRow key={h.id} data-ocid={`holidays.item.${i + 1}`}>
+                      <TableCell className="font-mono text-sm">
+                        {h.date}
+                      </TableCell>
+                      <TableCell className="text-sm">{dow}</TableCell>
+                      <TableCell className="font-medium">{h.name}</TableCell>
+                      <TableCell>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-destructive hover:text-destructive"
+                          onClick={() => handleDelete(h.id)}
+                          data-ocid={`holidays.delete_button.${i + 1}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+            </TableBody>
+          </Table>
         </div>
-      </div>
+      )}
     </div>
   );
 }

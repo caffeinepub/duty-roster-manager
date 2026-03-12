@@ -1,6 +1,13 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -8,359 +15,334 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { CalendarDays, Loader2, Save } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
+import type {
+  DutyRequest,
+  LeaveEntry,
+  NodutyRequest,
+  StaffMember,
+} from "@/types";
+import { CalendarDays, CalendarOff, PlusCircle, Trash2, X } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
-import type { LeaveRequest } from "../backend.d";
-import {
-  useGetLeaveRequest,
-  useListLeaveRequests,
-  useListStaff,
-  useUpsertLeaveRequest,
-} from "../hooks/useQueries";
 
-const MONTHS = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
-];
+function genId(): string {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
 
-function DayPicker({
-  label,
-  year,
-  month,
-  selected,
-  onChange,
-  color,
-}: {
-  label: string;
-  year: number;
-  month: number;
-  selected: number[];
-  onChange: (days: number[]) => void;
-  color: "blue" | "amber" | "emerald";
-}) {
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+function toISO(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
-  const colorClasses = {
-    blue: "bg-blue-100 text-blue-800 border-blue-300",
-    amber: "bg-amber-100 text-amber-800 border-amber-300",
-    emerald: "bg-emerald-100 text-emerald-800 border-emerald-300",
-  };
+interface EntryListProps {
+  entries: Array<{ id: string; staffId: string; dates: string[] }>;
+  staff: StaffMember[];
+  onDelete: (id: string) => void;
+  emptyText: string;
+  ocidPrefix: string;
+}
 
-  const toggle = (d: number) => {
-    if (selected.includes(d)) onChange(selected.filter((x) => x !== d));
-    else onChange([...selected, d].sort((a, b) => a - b));
-  };
-
+function EntryList({
+  entries,
+  staff,
+  onDelete,
+  emptyText,
+  ocidPrefix,
+}: EntryListProps) {
+  const staffById = new Map(staff.map((s) => [s.id, s]));
+  if (entries.length === 0) {
+    return (
+      <div
+        data-ocid={`${ocidPrefix}.empty_state`}
+        className="text-center py-8 text-muted-foreground text-sm border-2 border-dashed rounded-lg"
+      >
+        {emptyText}
+      </div>
+    );
+  }
   return (
     <div className="space-y-2">
-      <Label className="text-sm font-medium">{label}</Label>
-      <div className="flex flex-wrap gap-1.5">
-        {days.map((d) => (
-          <button
-            key={d}
-            type="button"
-            onClick={() => toggle(d)}
-            className={`w-8 h-8 text-xs font-medium rounded border transition-colors ${
-              selected.includes(d)
-                ? colorClasses[color]
-                : "bg-background border-border text-muted-foreground hover:border-primary/50"
-            }`}
+      {entries.map((e, i) => {
+        const member = staffById.get(e.staffId);
+        return (
+          <div
+            key={e.id}
+            data-ocid={`${ocidPrefix}.item.${i + 1}`}
+            className="flex items-start justify-between p-3 border rounded-lg bg-card"
           >
-            {d}
-          </button>
-        ))}
-      </div>
-      {selected.length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          Selected: {selected.join(", ")}
-        </p>
-      )}
+            <div>
+              <p className="font-medium text-sm">
+                {member?.name ?? "Unknown"}
+                <Badge variant="outline" className="ml-2 text-xs">
+                  {member?.role}
+                </Badge>
+              </p>
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {e.dates.map((d) => (
+                  <Badge
+                    key={d}
+                    variant="secondary"
+                    className="text-xs font-mono"
+                  >
+                    {d}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-destructive hover:text-destructive shrink-0"
+              onClick={() => onDelete(e.id)}
+              data-ocid={`${ocidPrefix}.delete_button.${i + 1}`}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-export function LeavesTab() {
-  const now = new Date();
-  const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth() + 1);
-  const [selectedStaffId, setSelectedStaffId] = useState("");
+interface AddFormProps {
+  staff: StaffMember[];
+  label: string;
+  onSave: (staffId: string, dates: string[]) => void;
+  ocidPrefix: string;
+}
 
-  const [leaveDays, setLeaveDays] = useState<number[]>([]);
-  const [noDutyDays, setNoDutyDays] = useState<number[]>([]);
-  const [preferredDays, setPreferredDays] = useState<number[]>([]);
+function AddForm({ staff, label, onSave, ocidPrefix }: AddFormProps) {
+  const [staffId, setStaffId] = useState("");
+  const [selectedDates, setSelectedDates] = useState<Date[]>([]);
+  const [calOpen, setCalOpen] = useState(false);
 
-  const { data: staffList = [] } = useListStaff();
-  const activeStaff = staffList.filter((s) => s.active);
-  const { data: leaveReq } = useGetLeaveRequest(selectedStaffId, year, month);
-  const { data: allLeaves = [] } = useListLeaveRequests(year, month);
-  const upsert = useUpsertLeaveRequest();
-
-  useEffect(() => {
-    if (leaveReq) {
-      setLeaveDays(leaveReq.leaveDates.map(Number));
-      setNoDutyDays(leaveReq.noDutyDates.map(Number));
-      setPreferredDays(leaveReq.preferredDutyDates.map(Number));
-    } else {
-      setLeaveDays([]);
-      setNoDutyDays([]);
-      setPreferredDays([]);
-    }
-  }, [leaveReq]);
-
-  const handleSave = async () => {
-    if (!selectedStaffId) {
-      toast.error("Please select a staff member");
+  const handleSave = () => {
+    if (!staffId) {
+      toast.error("Select a staff member");
       return;
     }
-    const req: LeaveRequest = {
-      staffId: selectedStaffId,
-      year: BigInt(year),
-      month: BigInt(month),
-      leaveDates: leaveDays.map(BigInt),
-      noDutyDates: noDutyDays.map(BigInt),
-      preferredDutyDates: preferredDays.map(BigInt),
-    };
-    try {
-      await upsert.mutateAsync(req);
-      toast.success("Leave request saved");
-    } catch {
-      toast.error("Failed to save leave request");
+    if (selectedDates.length === 0) {
+      toast.error("Select at least one date");
+      return;
     }
+    const dates = selectedDates.map(toISO).sort();
+    onSave(staffId, dates);
+    setStaffId("");
+    setSelectedDates([]);
   };
 
-  const staffById = new Map(staffList.map((s) => [s.id, s]));
-
-  const years = [
-    now.getFullYear() - 1,
-    now.getFullYear(),
-    now.getFullYear() + 1,
-  ];
+  const removeDate = (d: Date) => {
+    setSelectedDates((prev) => prev.filter((x) => toISO(x) !== toISO(d)));
+  };
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div>
-        <h2 className="text-2xl font-display font-semibold tracking-tight">
-          Leaves &amp; Requests
-        </h2>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Manage leave, no-duty, and preferred duty requests per staff
+    <Card className="mb-4">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm">Add {label}</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1.5">
+          <Label>Staff Member</Label>
+          <Select value={staffId} onValueChange={setStaffId}>
+            <SelectTrigger data-ocid={`${ocidPrefix}.select`}>
+              <SelectValue placeholder="Select staff member" />
+            </SelectTrigger>
+            <SelectContent>
+              {staff.map((s) => (
+                <SelectItem key={s.id} value={s.id}>
+                  {s.name} ({s.role})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Dates</Label>
+          <Popover open={calOpen} onOpenChange={setCalOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="outline"
+                className="w-full justify-start font-normal"
+                data-ocid={`${ocidPrefix}.input`}
+              >
+                <CalendarDays className="h-4 w-4 mr-2 opacity-60" />
+                {selectedDates.length === 0
+                  ? "Pick dates"
+                  : `${selectedDates.length} date${selectedDates.length > 1 ? "s" : ""} selected`}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="start">
+              <Calendar
+                mode="multiple"
+                selected={selectedDates}
+                onSelect={(dates) => setSelectedDates(dates ?? [])}
+                initialFocus
+              />
+            </PopoverContent>
+          </Popover>
+          {selectedDates.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {selectedDates
+                .slice()
+                .sort((a, b) => a.getTime() - b.getTime())
+                .map((d) => (
+                  <Badge
+                    key={toISO(d)}
+                    variant="secondary"
+                    className="text-xs font-mono gap-1 pr-1"
+                  >
+                    {toISO(d)}
+                    <button
+                      type="button"
+                      onClick={() => removeDate(d)}
+                      className="hover:text-destructive ml-0.5"
+                      aria-label={`Remove ${toISO(d)}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))}
+            </div>
+          )}
+        </div>
+        <Button
+          className="w-full"
+          onClick={handleSave}
+          data-ocid={`${ocidPrefix}.submit_button`}
+        >
+          <PlusCircle className="h-4 w-4 mr-2" /> Save
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function LeavesTab() {
+  const [staff] = useLocalStorage<StaffMember[]>("duty_roster_staff", []);
+  const [leaves, setLeaves] = useLocalStorage<LeaveEntry[]>(
+    "duty_roster_leaves",
+    [],
+  );
+  const [noduty, setNoduty] = useLocalStorage<NodutyRequest[]>(
+    "duty_roster_noduty",
+    [],
+  );
+  const [dutyrequests, setDutyrequests] = useLocalStorage<DutyRequest[]>(
+    "duty_roster_dutyrequests",
+    [],
+  );
+
+  if (staff.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center border-2 border-dashed rounded-lg">
+        <CalendarOff className="h-10 w-10 text-muted-foreground/40 mb-3" />
+        <p className="text-muted-foreground font-medium">
+          No staff in the system.
+        </p>
+        <p className="text-sm text-muted-foreground mt-1">
+          Add staff in the Personnel tab first.
         </p>
       </div>
+    );
+  }
 
-      {/* Month/Year/Staff selectors */}
-      <div className="flex flex-wrap gap-3 items-end p-4 bg-card rounded-lg border shadow-card">
-        <div className="space-y-1.5">
-          <Label>Year</Label>
-          <Select
-            value={String(year)}
-            onValueChange={(v) => setYear(Number(v))}
-          >
-            <SelectTrigger className="w-28">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {years.map((y) => (
-                <SelectItem key={y} value={String(y)}>
-                  {y}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label>Month</Label>
-          <Select
-            data-ocid="leaves.month.select"
-            value={String(month)}
-            onValueChange={(v) => setMonth(Number(v))}
-          >
-            <SelectTrigger className="w-36">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MONTHS.map((m) => (
-                <SelectItem key={m} value={String(MONTHS.indexOf(m) + 1)}>
-                  {m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5 flex-1 min-w-48">
-          <Label>Staff Member</Label>
-          <Select
-            data-ocid="leaves.staff.select"
-            value={selectedStaffId}
-            onValueChange={setSelectedStaffId}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Select staff member..." />
-            </SelectTrigger>
-            <SelectContent>
-              {activeStaff.map((s) => (
-                <SelectItem key={s.id} value={s.id}>
-                  {s.name} — {s.role}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="font-display text-xl font-semibold">
+          Leaves & Requests
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Manage leaves, no-duty requests and duty preferences
+        </p>
       </div>
+      <Tabs defaultValue="leaves">
+        <TabsList className="w-full sm:w-auto">
+          <TabsTrigger value="leaves" data-ocid="leaves.tab">
+            Leaves
+          </TabsTrigger>
+          <TabsTrigger value="noduty" data-ocid="leaves.tab">
+            No-Duty
+          </TabsTrigger>
+          <TabsTrigger value="dutyrequests" data-ocid="leaves.tab">
+            Duty Requests
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Day pickers */}
-      {selectedStaffId && (
-        <div className="p-5 bg-card rounded-lg border shadow-card space-y-6">
-          <div className="flex items-center gap-2">
-            <CalendarDays className="h-4 w-4 text-primary" />
-            <h3 className="font-display font-semibold">
-              {staffById.get(selectedStaffId)?.name} — {MONTHS[month - 1]}{" "}
-              {year}
-            </h3>
-          </div>
-          <DayPicker
-            label="Leave Days (will not be assigned)"
-            year={year}
-            month={month}
-            selected={leaveDays}
-            onChange={setLeaveDays}
-            color="amber"
+        <TabsContent value="leaves" className="mt-4 space-y-4">
+          <AddForm
+            staff={staff}
+            label="Leave"
+            onSave={(staffId, dates) => {
+              setLeaves((prev) => [...prev, { id: genId(), staffId, dates }]);
+              toast.success("Leave entry saved");
+            }}
+            ocidPrefix="leaves"
           />
-          <DayPicker
-            label="No-Duty Requested Days"
-            year={year}
-            month={month}
-            selected={noDutyDays}
-            onChange={setNoDutyDays}
-            color="blue"
+          <EntryList
+            entries={leaves}
+            staff={staff}
+            onDelete={(id) => {
+              setLeaves((prev) => prev.filter((e) => e.id !== id));
+              toast.success("Leave removed");
+            }}
+            emptyText="No leave entries yet."
+            ocidPrefix="leaves"
           />
-          <DayPicker
-            label="Preferred Duty Days"
-            year={year}
-            month={month}
-            selected={preferredDays}
-            onChange={setPreferredDays}
-            color="emerald"
-          />
-          <div className="flex justify-end pt-2">
-            <Button
-              data-ocid="leaves.save_button"
-              onClick={handleSave}
-              disabled={upsert.isPending}
-            >
-              {upsert.isPending && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
-              <Save className="mr-2 h-4 w-4" />
-              Save Requests
-            </Button>
-          </div>
-        </div>
-      )}
+        </TabsContent>
 
-      {/* Summary table */}
-      <div className="rounded-lg border bg-card shadow-card overflow-hidden">
-        <div className="px-4 py-3 border-b bg-muted/30">
-          <h3 className="font-display font-semibold text-sm">
-            Summary — {MONTHS[month - 1]} {year}
-          </h3>
-        </div>
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-muted/20">
-              <TableHead className="font-semibold">Staff</TableHead>
-              <TableHead className="font-semibold">Role</TableHead>
-              <TableHead className="text-center font-semibold">
-                Leave Days
-              </TableHead>
-              <TableHead className="text-center font-semibold">
-                No-Duty Requests
-              </TableHead>
-              <TableHead className="text-center font-semibold">
-                Preferred Days
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {activeStaff.length === 0 && (
-              <TableRow>
-                <TableCell
-                  colSpan={5}
-                  className="text-center py-8 text-muted-foreground"
-                >
-                  No active staff members
-                </TableCell>
-              </TableRow>
-            )}
-            {activeStaff.map((s) => {
-              const req = allLeaves.find((l) => l.staffId === s.id);
-              return (
-                <TableRow key={s.id}>
-                  <TableCell className="font-medium">{s.name}</TableCell>
-                  <TableCell className="text-muted-foreground text-sm">
-                    {s.role}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    {req?.leaveDates.length ? (
-                      <Badge
-                        variant="outline"
-                        className="bg-amber-50 text-amber-700 border-amber-200 text-xs"
-                      >
-                        {req.leaveDates.length}
-                      </Badge>
-                    ) : (
-                      <span className="text-muted-foreground text-sm">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    {req?.noDutyDates.length ? (
-                      <Badge
-                        variant="outline"
-                        className="bg-blue-50 text-blue-700 border-blue-200 text-xs"
-                      >
-                        {req.noDutyDates.length}
-                      </Badge>
-                    ) : (
-                      <span className="text-muted-foreground text-sm">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    {req?.preferredDutyDates.length ? (
-                      <Badge
-                        variant="outline"
-                        className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs"
-                      >
-                        {req.preferredDutyDates.length}
-                      </Badge>
-                    ) : (
-                      <span className="text-muted-foreground text-sm">—</span>
-                    )}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </div>
+        <TabsContent value="noduty" className="mt-4 space-y-4">
+          <AddForm
+            staff={staff}
+            label="No-Duty Request"
+            onSave={(staffId, dates) => {
+              setNoduty((prev) => [...prev, { id: genId(), staffId, dates }]);
+              toast.success("No-duty request saved");
+            }}
+            ocidPrefix="noduty"
+          />
+          <EntryList
+            entries={noduty}
+            staff={staff}
+            onDelete={(id) => {
+              setNoduty((prev) => prev.filter((e) => e.id !== id));
+              toast.success("No-duty request removed");
+            }}
+            emptyText="No no-duty requests yet."
+            ocidPrefix="noduty"
+          />
+        </TabsContent>
+
+        <TabsContent value="dutyrequests" className="mt-4 space-y-4">
+          <AddForm
+            staff={staff}
+            label="Duty Request"
+            onSave={(staffId, dates) => {
+              setDutyrequests((prev) => [
+                ...prev,
+                { id: genId(), staffId, dates },
+              ]);
+              toast.success("Duty request saved");
+            }}
+            ocidPrefix="dutyreq"
+          />
+          <EntryList
+            entries={dutyrequests}
+            staff={staff}
+            onDelete={(id) => {
+              setDutyrequests((prev) => prev.filter((e) => e.id !== id));
+              toast.success("Duty request removed");
+            }}
+            emptyText="No duty requests yet."
+            ocidPrefix="dutyreq"
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

@@ -1,12 +1,5 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -15,28 +8,34 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
+import { generateRoster } from "@/rosterEngine";
+import type {
+  DutyRequest,
+  Holiday,
+  LeaveEntry,
+  NodutyRequest,
+  RosterDay,
+  RosterOverride,
+  StaffMember,
+} from "@/types";
 import {
+  AlignmentType,
+  BorderStyle,
+  Document,
+  Packer,
+  Paragraph,
+  ShadingType,
   Table,
-  TableBody,
   TableCell,
-  TableHead,
-  TableHeader,
   TableRow,
-} from "@/components/ui/table";
-import { AlertTriangle, Loader2, Printer, Save, Wand2 } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
+  TextRun,
+  WidthType,
+} from "docx";
+import { saveAs } from "file-saver";
+import { AlignLeft, ClipboardList, Printer, RefreshCw } from "lucide-react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import type { RosterEntry } from "../backend.d";
-import {
-  useGetMonthStats,
-  useGetRoster,
-  useListHolidays,
-  useListLeaveRequests,
-  useListStaff,
-  useSaveRoster,
-} from "../hooks/useQueries";
-import { generateRoster } from "../rosterLogic";
 
 const MONTHS = [
   "January",
@@ -53,589 +52,638 @@ const MONTHS = [
   "December",
 ];
 
-const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function pad(n: number) {
+  return String(n).padStart(2, "0");
+}
 
-function OverrideDialog({
-  open,
-  day,
-  entry,
-  staffList,
-  onSave,
-  onClose,
-}: {
-  open: boolean;
-  day: number;
-  entry: RosterEntry | null;
-  staffList: Array<{ id: string; name: string; role: string }>;
-  onSave: (updated: RosterEntry) => void;
-  onClose: () => void;
-}) {
-  const [pgId, setPgId] = useState(entry?.pgId ?? "");
-  const [secondId, setSecondId] = useState(entry?.secondLayerId ?? "");
-  const [thirdId, setThirdId] = useState(entry?.thirdLayerId ?? "");
+function isHolidayOrSunday(date: string, holidays: Holiday[]): boolean {
+  const d = new Date(`${date}T00:00:00`);
+  return d.getDay() === 0 || holidays.some((h) => h.date === date);
+}
 
-  const pgs = staffList.filter((s) => s.role === "PG");
-  const second = staffList.filter(
-    (s) => s.role === "Registrar" || s.role === "JC",
-  );
-  const third = staffList.filter((s) => s.role === "SC" || s.role === "JC");
+function isPreHoliday(date: string, holidays: Holiday[]): boolean {
+  const d = new Date(`${date}T00:00:00`);
+  const dow = d.getDay();
+  if (dow === 6) return true;
+  const next = new Date(d);
+  next.setDate(next.getDate() + 1);
+  const nextISO = `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}`;
+  const nextDow = next.getDay();
+  return nextDow === 0 || holidays.some((h) => h.date === nextISO);
+}
 
-  const handleSave = () => {
-    if (!entry) return;
-    onSave({
-      ...entry,
-      pgId,
-      secondLayerId: secondId,
-      thirdLayerId: thirdId,
-      manualOverride: true,
-      flags: [],
-    });
-    onClose();
-  };
+interface OverrideCellProps {
+  value: string | null;
+  candidates: StaffMember[];
+  onSelect: (name: string | null) => void;
+  highlightRole?: "pg" | "reg" | "sc";
+}
+
+function OverrideCell({
+  value,
+  candidates,
+  onSelect,
+  highlightRole,
+}: OverrideCellProps) {
+  const [editing, setEditing] = useState(false);
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className="cursor-pointer hover:underline hover:text-primary transition-colors text-left bg-transparent border-0 p-0"
+        onClick={() => setEditing(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") setEditing(true);
+        }}
+        title="Click to override"
+      >
+        {value ?? <span className="text-destructive/70 italic text-xs">—</span>}
+      </button>
+    );
+  }
+
+  const roleFilter =
+    highlightRole === "pg"
+      ? ["PG"]
+      : highlightRole === "reg"
+        ? ["Registrar", "JC"]
+        : ["SC", "JC"];
+
+  const sorted = [
+    ...candidates.filter((s) => roleFilter.includes(s.role)),
+    ...candidates.filter((s) => !roleFilter.includes(s.role)),
+  ];
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent data-ocid="roster.override.dialog" className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="font-display">Override Day {day}</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          <div className="space-y-1.5">
-            <Label>PG (First Layer)</Label>
-            <Select value={pgId} onValueChange={setPgId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select PG..." />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">None</SelectItem>
-                {pgs.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Second Layer (Registrar / JC)</Label>
-            <Select value={secondId} onValueChange={setSecondId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select..." />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">None</SelectItem>
-                {second.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.name} ({s.role})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Third Layer (SC / JC)</Label>
-            <Select value={thirdId} onValueChange={setThirdId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select..." />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">None</SelectItem>
-                {third.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.name} ({s.role})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button data-ocid="roster.override.save_button" onClick={handleSave}>
-            Apply Override
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <Select
+      value={value ?? "__none__"}
+      onValueChange={(v) => {
+        onSelect(v === "__none__" ? null : v);
+        setEditing(false);
+      }}
+      open
+      onOpenChange={(open) => {
+        if (!open) setEditing(false);
+      }}
+    >
+      <SelectTrigger className="h-7 text-xs w-36">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="__none__">— Unassigned —</SelectItem>
+        {sorted.map((s) => (
+          <SelectItem key={s.id} value={s.name}>
+            {s.name} ({s.role})
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
+}
+
+async function exportToWord(
+  roster: RosterDay[],
+  holidays: Holiday[],
+  month: number,
+  year: number,
+  staff: StaffMember[],
+) {
+  const HEADER_COLOR = "1F4E79";
+  const HOLIDAY_COLOR = "D6E4F0";
+  const PREHOLIDAY_COLOR = "EAF4FB";
+  const WHITE = "FFFFFF";
+
+  const cellBorder = {
+    top: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+    bottom: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+    left: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+    right: { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" },
+  };
+
+  const makeHeaderCell = (text: string, widthPercent: number) =>
+    new TableCell({
+      width: { size: widthPercent, type: WidthType.PERCENTAGE },
+      shading: { type: ShadingType.CLEAR, fill: HEADER_COLOR },
+      borders: cellBorder,
+      children: [
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [
+            new TextRun({
+              text,
+              bold: true,
+              color: WHITE,
+              size: 20,
+            }),
+          ],
+        }),
+      ],
+    });
+
+  const makeCell = (
+    text: string,
+    widthPercent: number,
+    bgColor: string,
+    bold = false,
+  ) =>
+    new TableCell({
+      width: { size: widthPercent, type: WidthType.PERCENTAGE },
+      shading: { type: ShadingType.CLEAR, fill: bgColor },
+      borders: cellBorder,
+      children: [
+        new Paragraph({
+          alignment: AlignmentType.LEFT,
+          children: [
+            new TextRun({
+              text: text || "",
+              bold,
+              size: 18,
+            }),
+          ],
+        }),
+      ],
+    });
+
+  const headerRow = new TableRow({
+    tableHeader: true,
+    children: [
+      makeHeaderCell("Day", 6),
+      makeHeaderCell("DOW", 7),
+      makeHeaderCell("PG", 17),
+      makeHeaderCell("Registrar / JC", 22),
+      makeHeaderCell("Senior Consultant", 22),
+      makeHeaderCell("Flags", 26),
+    ],
+  });
+
+  const dataRows = roster.map((row) => {
+    const day = new Date(`${row.date}T00:00:00`).getDate();
+    const isHol = isHolidayOrSunday(row.date, holidays);
+    const isPre = !isHol && isPreHoliday(row.date, holidays);
+    const bg = isHol ? HOLIDAY_COLOR : isPre ? PREHOLIDAY_COLOR : "F9F9F9";
+
+    return new TableRow({
+      children: [
+        makeCell(String(day), 6, bg, true),
+        makeCell(row.dayOfWeek, 7, bg, isPre || isHol),
+        makeCell(row.pg ?? "", 17, bg),
+        makeCell(row.registrarJC ?? "", 22, bg),
+        makeCell(row.seniorConsultant ?? "", 22, bg),
+        makeCell(
+          row.flags.join("; "),
+          26,
+          row.flags.length > 0 ? "FFF3CD" : bg,
+        ),
+      ],
+    });
+  });
+
+  // Summary section
+  const summaryLines = staff
+    .map((s) => {
+      const count = roster.filter(
+        (r) =>
+          r.pg === s.name ||
+          r.registrarJC === s.name ||
+          r.seniorConsultant === s.name,
+      ).length;
+      const fridays = roster.filter(
+        (r) =>
+          new Date(`${r.date}T00:00:00`).getDay() === 5 &&
+          (r.pg === s.name ||
+            r.registrarJC === s.name ||
+            r.seniorConsultant === s.name),
+      ).length;
+      const saturdays = roster.filter(
+        (r) =>
+          new Date(`${r.date}T00:00:00`).getDay() === 6 &&
+          (r.pg === s.name ||
+            r.registrarJC === s.name ||
+            r.seniorConsultant === s.name),
+      ).length;
+      return `${s.name} (${s.role}): ${count} duties, ${fridays} Friday(s), ${saturdays} Saturday(s)`;
+    })
+    .join("\n");
+
+  const doc = new Document({
+    sections: [
+      {
+        properties: {
+          page: {
+            margin: {
+              top: 720,
+              right: 720,
+              bottom: 720,
+              left: 720,
+            },
+          },
+        },
+        children: [
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 200 },
+            children: [
+              new TextRun({
+                text: `Duty Roster — ${MONTHS[month - 1]} ${year}`,
+                bold: true,
+                size: 28,
+                color: "1F4E79",
+              }),
+            ],
+          }),
+          new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [headerRow, ...dataRows],
+          }),
+          new Paragraph({
+            spacing: { before: 400 },
+            children: [
+              new TextRun({
+                text: "Staff Summary",
+                bold: true,
+                size: 22,
+              }),
+            ],
+          }),
+          ...summaryLines.split("\n").map(
+            (line) =>
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: line,
+                    size: 18,
+                  }),
+                ],
+              }),
+          ),
+        ],
+      },
+    ],
+  });
+
+  const blob = await Packer.toBlob(doc);
+  saveAs(blob, `DutyRoster_${MONTHS[month - 1]}_${year}.docx`);
 }
 
 export function RosterTab() {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const [localEntries, setLocalEntries] = useState<RosterEntry[] | null>(null);
-  const [generating, setGenerating] = useState(false);
-  const [overrideDay, setOverrideDay] = useState<number | null>(null);
+  const [roster, setRoster] = useState<RosterDay[] | null>(null);
+  const [generated, setGenerated] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
-  const { data: staffList = [] } = useListStaff();
-  const { data: leaveRequests = [] } = useListLeaveRequests(year, month);
-  const { data: holidays = [] } = useListHolidays(year, month);
-  const { data: savedRoster } = useGetRoster(year, month);
-  const { data: stats = [] } = useGetMonthStats(year, month);
-  const saveRoster = useSaveRoster();
+  const [staff] = useLocalStorage<StaffMember[]>("duty_roster_staff", []);
+  const [leaves] = useLocalStorage<LeaveEntry[]>("duty_roster_leaves", []);
+  const [noduty] = useLocalStorage<NodutyRequest[]>("duty_roster_noduty", []);
+  const [dutyrequests] = useLocalStorage<DutyRequest[]>(
+    "duty_roster_dutyrequests",
+    [],
+  );
+  const [holidays] = useLocalStorage<Holiday[]>("duty_roster_holidays", []);
 
-  const entries = localEntries ?? savedRoster?.entries ?? [];
-  const staffById = new Map(staffList.map((s) => [s.id, s]));
-  const activeStaff = staffList.filter((s) => s.active);
+  const overrideKey = `duty_roster_override_${year}-${pad(month)}`;
+  const [overrides, setOverrides] = useLocalStorage<RosterOverride>(
+    overrideKey,
+    {},
+  );
 
-  const years = [
-    now.getFullYear() - 1,
-    now.getFullYear(),
-    now.getFullYear() + 1,
-  ];
-
-  const handleGenerate = async () => {
-    setGenerating(true);
-    try {
-      await new Promise((r) => setTimeout(r, 300));
-      const generated = generateRoster(
-        year,
-        month,
-        staffList,
-        leaveRequests,
-        holidays,
-      );
-      setLocalEntries(generated);
-      toast.success(`Roster generated for ${MONTHS[month - 1]} ${year}`);
-    } catch (e) {
-      toast.error(`Generation failed: ${String(e)}`);
-    } finally {
-      setGenerating(false);
-    }
-  };
-
-  const handleSave = async () => {
-    if (!entries.length) {
-      toast.error("Generate a roster first");
+  const handleGenerate = () => {
+    if (staff.length === 0) {
+      toast.error("Add staff in the Personnel tab first");
       return;
     }
+    const rows = generateRoster(
+      year,
+      month,
+      staff,
+      leaves,
+      noduty,
+      dutyrequests,
+      holidays,
+      overrides,
+    );
+    setRoster(rows);
+    setGenerated(true);
+    toast.success(`Roster generated for ${MONTHS[month - 1]} ${year}`);
+  };
+
+  const displayRoster = useMemo(() => {
+    if (!generated || !roster) return roster;
+    return generateRoster(
+      year,
+      month,
+      staff,
+      leaves,
+      noduty,
+      dutyrequests,
+      holidays,
+      overrides,
+    );
+  }, [
+    generated,
+    roster,
+    overrides,
+    year,
+    month,
+    staff,
+    leaves,
+    noduty,
+    dutyrequests,
+    holidays,
+  ]);
+
+  const handleOverride = (
+    date: string,
+    slot: "pg" | "reg" | "sc",
+    name: string | null,
+  ) => {
+    const key = `${date}_${slot}`;
+    setOverrides((prev) => {
+      const next = { ...prev };
+      if (name === null) delete next[key];
+      else next[key] = name;
+      return next;
+    });
+    toast.success("Override saved");
+  };
+
+  const handleExportWord = async () => {
+    if (!displayRoster) return;
+    setExporting(true);
     try {
-      await saveRoster.mutateAsync({ year, month, entries });
-      setLocalEntries(null);
-      toast.success("Roster saved successfully");
+      await exportToWord(displayRoster, holidays, month, year, staff);
+      toast.success("Word document downloaded");
     } catch {
-      toast.error("Failed to save roster");
+      toast.error("Failed to export Word document");
+    } finally {
+      setExporting(false);
     }
   };
 
-  const handleOverrideSave = (updated: RosterEntry) => {
-    setLocalEntries((prev) => {
-      const base = prev ?? savedRoster?.entries ?? [];
-      return base.map((e) => (e.day === updated.day ? updated : e));
-    });
-  };
-
-  const handlePrint = () => window.print();
-
-  const daysInMonth = new Date(year, month, 0).getDate();
-  const firstDow = new Date(year, month - 1, 1).getDay();
-
-  const calendarCells: Array<number | null> = [
-    ...Array(firstDow).fill(null),
-    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
-  ];
-  while (calendarCells.length % 7 !== 0) calendarCells.push(null);
-
-  const weeks: Array<Array<{ day: number | null; cellKey: string }>> = [];
-  for (let ci = 0; ci < calendarCells.length; ci += 7) {
-    weeks.push(
-      calendarCells.slice(ci, ci + 7).map((d, slot) => ({
-        day: d,
-        cellKey: d !== null ? `day-${d}` : `pad-${ci + slot}`,
-      })),
-    );
-  }
-
-  const overrideEntry = overrideDay
-    ? (entries.find((e) => Number(e.day) === overrideDay) ?? null)
-    : null;
-
-  const totalFlags = entries.reduce((acc, e) => acc + e.flags.length, 0);
-
-  const isHoliday = (day: number) => {
-    const dow = new Date(year, month - 1, day).getDay();
-    return dow === 0 || holidays.some((h) => Number(h.day) === day);
-  };
-  const isPreHoliday = (day: number) => {
-    const dow = new Date(year, month - 1, day).getDay();
-    return dow === 6;
-  };
+  const hasFlags = displayRoster?.some((r) => r.flags.length > 0) ?? false;
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
+    <div className="space-y-4">
+      <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-2xl font-display font-semibold tracking-tight">
-            Duty Roster
+          <h2 className="font-display text-xl font-semibold">
+            Roster Generator
           </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Generate, review, and save the monthly duty roster
+          <p className="text-sm text-muted-foreground">
+            Generate monthly duty roster with rule enforcement
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            data-ocid="roster.export_button"
-            onClick={handlePrint}
-          >
-            <Printer className="mr-2 h-4 w-4" />
-            Print
-          </Button>
-          <Button
-            variant="outline"
-            onClick={handleSave}
-            disabled={saveRoster.isPending || !entries.length}
-          >
-            {saveRoster.isPending && (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            )}
-            <Save className="mr-2 h-4 w-4" />
-            Save Roster
-          </Button>
-          <Button
-            data-ocid="roster.generate_button"
-            onClick={handleGenerate}
-            disabled={generating}
-          >
-            {generating ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Wand2 className="mr-2 h-4 w-4" />
-            )}
-            Generate Roster
-          </Button>
-        </div>
+        {generated && displayRoster && (
+          <div className="flex gap-2 flex-wrap">
+            <Button
+              variant="outline"
+              onClick={() => window.print()}
+              data-ocid="roster.secondary_button"
+            >
+              <Printer className="h-4 w-4 mr-2" /> Print
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleExportWord}
+              disabled={exporting}
+              data-ocid="roster.export_button"
+            >
+              <AlignLeft className="h-4 w-4 mr-2" />
+              {exporting ? "Exporting..." : "Export Word"}
+            </Button>
+          </div>
+        )}
       </div>
 
-      <div className="flex flex-wrap gap-3 items-end p-4 bg-card rounded-lg border shadow-card">
-        <div className="space-y-1.5">
-          <Label>Year</Label>
-          <Select
-            value={String(year)}
-            onValueChange={(v) => {
-              setYear(Number(v));
-              setLocalEntries(null);
-            }}
-          >
-            <SelectTrigger className="w-28">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {years.map((y) => (
-                <SelectItem key={y} value={String(y)}>
-                  {y}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <div className="flex items-end gap-3 flex-wrap p-4 border rounded-lg bg-card">
         <div className="space-y-1.5">
           <Label>Month</Label>
-          <Select
-            data-ocid="roster.month.select"
-            value={String(month)}
-            onValueChange={(v) => {
-              setMonth(Number(v));
-              setLocalEntries(null);
+          <select
+            data-ocid="roster.select"
+            value={month}
+            onChange={(e) => {
+              setMonth(Number(e.target.value));
+              setGenerated(false);
             }}
+            className="border rounded-md px-3 py-1.5 text-sm bg-background"
           >
-            <SelectTrigger className="w-36">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {MONTHS.map((m) => (
-                <SelectItem key={m} value={String(MONTHS.indexOf(m) + 1)}>
-                  {m}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        {totalFlags > 0 && (
-          <div className="flex items-center gap-2 ml-auto px-3 py-1.5 bg-red-50 border border-red-200 rounded-md">
-            <AlertTriangle className="h-4 w-4 text-red-600" />
-            <span className="text-sm font-medium text-red-700">
-              {totalFlags} violation{totalFlags !== 1 ? "s" : ""} detected
-            </span>
-          </div>
-        )}
-      </div>
-
-      <div className="flex flex-wrap gap-3 text-xs">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-sm pg-badge inline-block" />
-          PG (First Layer)
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-sm second-badge inline-block" />
-          Second Layer
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-sm third-badge inline-block" />
-          Third Layer
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-sm bg-red-100 border border-red-300 inline-block" />
-          Flagged
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="w-3 h-3 rounded-sm bg-amber-100 border border-amber-300 inline-block" />
-          Holiday/Pre-Holiday
-        </span>
-      </div>
-
-      {entries.length > 0 ? (
-        <div className="rounded-lg border bg-card shadow-card overflow-hidden print:shadow-none">
-          <div className="grid grid-cols-7 border-b bg-muted/30">
-            {DOW_LABELS.map((d) => (
-              <div
-                key={d}
-                className="text-center text-xs font-semibold py-2 text-muted-foreground uppercase tracking-wide"
-              >
-                {d}
-              </div>
+            {MONTHS.map((m, i) => (
+              <option key={m} value={i + 1}>
+                {m}
+              </option>
             ))}
-          </div>
-          {weeks.map((week) => {
-            const weekKey = `week-${week.find((c) => c.day !== null)?.day ?? "pad"}`;
-            return (
-              <div
-                key={weekKey}
-                className="grid grid-cols-7 border-b last:border-b-0"
-              >
-                {week.map(({ day, cellKey }) => {
-                  if (!day) {
-                    return (
-                      <div
-                        key={cellKey}
-                        className="min-h-[100px] bg-muted/10 border-r last:border-r-0"
-                      />
-                    );
-                  }
-                  const entry = entries.find((e) => Number(e.day) === day);
-                  const hasFlags = (entry?.flags.length ?? 0) > 0;
-                  const holiday = isHoliday(day);
-                  const preHoliday = isPreHoliday(day);
-                  const pg = entry?.pgId ? staffById.get(entry.pgId) : null;
-                  const second = entry?.secondLayerId
-                    ? staffById.get(entry.secondLayerId)
-                    : null;
-                  const third = entry?.thirdLayerId
-                    ? staffById.get(entry.thirdLayerId)
-                    : null;
-
-                  return (
-                    <motion.div
-                      key={cellKey}
-                      data-ocid={`roster.day.item.${day}`}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: day * 0.008 }}
-                      className={`min-h-[100px] border-r last:border-r-0 p-1.5 cursor-pointer hover:bg-muted/20 transition-colors relative ${
-                        hasFlags
-                          ? "bg-red-50/60"
-                          : holiday
-                            ? "bg-amber-50/40"
-                            : preHoliday
-                              ? "bg-amber-50/20"
-                              : ""
-                      }`}
-                      onClick={() => setOverrideDay(day)}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span
-                          className={`text-xs font-semibold ${
-                            holiday
-                              ? "text-red-600"
-                              : preHoliday
-                                ? "text-amber-600"
-                                : "text-foreground"
-                          }`}
-                        >
-                          {day}
-                        </span>
-                        {entry?.manualOverride && (
-                          <span className="text-[10px] text-muted-foreground">
-                            M
-                          </span>
-                        )}
-                      </div>
-                      <div className="space-y-0.5">
-                        {pg && (
-                          <div className="pg-badge text-[10px] font-medium px-1 py-0.5 rounded truncate">
-                            {pg.name}
-                          </div>
-                        )}
-                        {second && (
-                          <div className="second-badge text-[10px] font-medium px-1 py-0.5 rounded truncate">
-                            {second.name}
-                          </div>
-                        )}
-                        {third && (
-                          <div className="third-badge text-[10px] font-medium px-1 py-0.5 rounded truncate">
-                            {third.name}
-                          </div>
-                        )}
-                      </div>
-                      {hasFlags && (
-                        <div className="absolute top-1 right-1">
-                          <AlertTriangle className="h-3 w-3 text-red-500" />
-                        </div>
-                      )}
-                    </motion.div>
-                  );
-                })}
-              </div>
-            );
-          })}
+          </select>
         </div>
-      ) : (
+        <div className="space-y-1.5">
+          <Label>Year</Label>
+          <input
+            data-ocid="roster.input"
+            type="number"
+            value={year}
+            onChange={(e) => {
+              setYear(Number(e.target.value));
+              setGenerated(false);
+            }}
+            className="border rounded-md px-3 py-1.5 text-sm bg-background w-24"
+          />
+        </div>
+        <Button
+          onClick={handleGenerate}
+          className="self-end"
+          data-ocid="roster.primary_button"
+        >
+          <RefreshCw className="h-4 w-4 mr-2" /> Generate Roster
+        </Button>
+      </div>
+
+      {!generated && (
         <div
           data-ocid="roster.empty_state"
-          className="flex flex-col items-center justify-center py-20 bg-card rounded-lg border shadow-card text-center space-y-3"
+          className="flex flex-col items-center justify-center py-16 text-center border-2 border-dashed rounded-lg"
         >
-          <Wand2 className="h-10 w-10 text-muted-foreground/40" />
-          <p className="font-display font-semibold text-lg text-muted-foreground">
-            No roster generated yet
+          <ClipboardList className="h-10 w-10 text-muted-foreground/40 mb-3" />
+          <p className="text-muted-foreground font-medium">
+            No roster generated yet.
           </p>
-          <p className="text-sm text-muted-foreground max-w-xs">
-            Click &quot;Generate Roster&quot; to auto-assign duties for{" "}
-            {MONTHS[month - 1]} {year}. You can also manually override any day
-            after generation.
+          <p className="text-sm text-muted-foreground mt-1">
+            Select a month and click Generate Roster.
           </p>
-          <Button
-            onClick={handleGenerate}
-            disabled={generating}
-            className="mt-2"
-          >
-            {generating ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Wand2 className="mr-2 h-4 w-4" />
-            )}
-            Generate Roster
-          </Button>
         </div>
       )}
 
-      <AnimatePresence>
-        {totalFlags > 0 && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            className="rounded-lg border border-red-200 bg-red-50 overflow-hidden"
-          >
-            <div className="px-4 py-3 border-b border-red-200">
-              <h3 className="font-display font-semibold text-red-800 text-sm flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4" />
-                Rule Violations ({totalFlags})
-              </h3>
+      {generated && displayRoster && (
+        <>
+          {hasFlags && (
+            <div
+              data-ocid="roster.error_state"
+              className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-sm text-destructive"
+            >
+              This roster has rule violations — see the Flags column.
             </div>
-            <div className="p-4 space-y-2">
-              {entries.flatMap((e) =>
-                e.flags.map((flag, fi) => (
-                  <div
-                    key={`flag-${e.day}-${fi}`}
-                    className="flex items-start gap-2 text-sm text-red-700"
-                  >
-                    <span className="font-semibold shrink-0">
-                      Day {Number(e.day)}:
-                    </span>
-                    <span>{flag}</span>
-                  </div>
-                )),
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
 
-      {(stats.length > 0 || entries.length > 0) && (
-        <div className="rounded-lg border bg-card shadow-card overflow-hidden">
-          <div className="px-4 py-3 border-b bg-muted/30">
-            <h3 className="font-display font-semibold text-sm">
-              Duty Count — {MONTHS[month - 1]} {year}
-            </h3>
+          <div
+            className="border rounded-lg overflow-auto"
+            id="roster-print-area"
+          >
+            <table className="w-full text-sm border-collapse print:text-xs">
+              <thead>
+                <tr className="bg-muted/60 text-left">
+                  <th className="px-3 py-2.5 font-semibold border-b w-10">
+                    Day
+                  </th>
+                  <th className="px-3 py-2.5 font-semibold border-b w-12">
+                    DOW
+                  </th>
+                  <th className="px-3 py-2.5 font-semibold border-b">PG</th>
+                  <th className="px-3 py-2.5 font-semibold border-b">
+                    Registrar / JC
+                  </th>
+                  <th className="px-3 py-2.5 font-semibold border-b">
+                    Senior Consultant
+                  </th>
+                  <th className="px-3 py-2.5 font-semibold border-b">Flags</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayRoster.map((row, i) => {
+                  const isSpecial = isHolidayOrSunday(row.date, holidays);
+                  const isPre = !isSpecial && isPreHoliday(row.date, holidays);
+                  const day = new Date(`${row.date}T00:00:00`).getDate();
+                  return (
+                    <tr
+                      key={row.date}
+                      data-ocid={`roster.item.${i + 1}`}
+                      className={[
+                        "border-b last:border-b-0 transition-colors",
+                        isSpecial
+                          ? "bg-blue-50 dark:bg-blue-950/30"
+                          : isPre
+                            ? "bg-sky-50/60 dark:bg-sky-950/20"
+                            : "hover:bg-muted/20",
+                      ].join(" ")}
+                    >
+                      <td className="px-3 py-2 font-mono font-medium">{day}</td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={`font-medium ${
+                            isSpecial
+                              ? "text-primary"
+                              : isPre
+                                ? "text-sky-600"
+                                : ""
+                          }`}
+                        >
+                          {row.dayOfWeek}
+                          {isPre && (
+                            <span className="ml-1 text-xs text-sky-500 font-normal">
+                              (pre)
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <OverrideCell
+                          value={row.pg}
+                          candidates={staff}
+                          highlightRole="pg"
+                          onSelect={(name) =>
+                            handleOverride(row.date, "pg", name)
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <OverrideCell
+                          value={row.registrarJC}
+                          candidates={staff}
+                          highlightRole="reg"
+                          onSelect={(name) =>
+                            handleOverride(row.date, "reg", name)
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <OverrideCell
+                          value={row.seniorConsultant}
+                          candidates={staff}
+                          highlightRole="sc"
+                          onSelect={(name) =>
+                            handleOverride(row.date, "sc", name)
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        {row.flags.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {row.flags.map((f) => (
+                              <Badge key={f} className="flag-badge text-xs">
+                                {f}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground/40 text-xs">
+                            —
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/20">
-                <TableHead className="font-semibold">Staff Member</TableHead>
-                <TableHead className="font-semibold">Role</TableHead>
-                <TableHead className="text-center font-semibold">
-                  Duties
-                </TableHead>
-                <TableHead className="text-center font-semibold">
-                  Status
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {activeStaff.map((s) => {
-                const statEntry = stats.find(([id]) => id === s.id);
-                const localCount =
-                  entries.length > 0
-                    ? entries.filter(
-                        (e) =>
-                          e.pgId === s.id ||
-                          e.secondLayerId === s.id ||
-                          e.thirdLayerId === s.id,
-                      ).length
-                    : null;
-                const count =
-                  localCount ?? (statEntry ? Number(statEntry[1]) : 0);
-                const over = count > 6;
+
+          <div className="mt-4 p-3 bg-muted/40 rounded-lg">
+            <p className="text-xs text-muted-foreground font-medium mb-2">
+              Summary
+            </p>
+            <div className="flex flex-wrap gap-4 text-xs">
+              {staff.map((s) => {
+                const myRows = (displayRoster ?? []).filter(
+                  (r) =>
+                    r.pg === s.name ||
+                    r.registrarJC === s.name ||
+                    r.seniorConsultant === s.name,
+                );
+                const count = myRows.length;
+                const fridays = myRows.filter(
+                  (r) => new Date(`${r.date}T00:00:00`).getDay() === 5,
+                ).length;
+                const saturdays = myRows.filter(
+                  (r) => new Date(`${r.date}T00:00:00`).getDay() === 6,
+                ).length;
                 return (
-                  <TableRow key={s.id}>
-                    <TableCell className="font-medium">{s.name}</TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
-                      {s.role}
-                    </TableCell>
-                    <TableCell className="text-center">
+                  <span key={s.id} className="flex items-center gap-1">
+                    <span className="font-medium">{s.name}</span>
+                    <Badge variant="outline" className="text-xs">
+                      {count}d
+                    </Badge>
+                    {fridays > 0 && (
                       <Badge
                         variant="outline"
-                        className={`text-xs ${
-                          over
-                            ? "bg-red-50 text-red-700 border-red-200"
-                            : count >= 5
-                              ? "bg-amber-50 text-amber-700 border-amber-200"
-                              : "bg-muted text-muted-foreground"
-                        }`}
+                        className="text-xs text-sky-600 border-sky-300"
                       >
-                        {count} / 6
+                        {fridays}F
                       </Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {over ? (
-                        <span className="text-xs text-red-600 font-medium">
-                          Over limit
-                        </span>
-                      ) : (
-                        <span className="text-xs text-emerald-600 font-medium">
-                          OK
-                        </span>
-                      )}
-                    </TableCell>
-                  </TableRow>
+                    )}
+                    {saturdays > 0 && (
+                      <Badge
+                        variant="outline"
+                        className="text-xs text-amber-600 border-amber-300"
+                      >
+                        {saturdays}S
+                      </Badge>
+                    )}
+                  </span>
                 );
               })}
-            </TableBody>
-          </Table>
-        </div>
+            </div>
+          </div>
+        </>
       )}
-
-      <OverrideDialog
-        open={overrideDay !== null}
-        day={overrideDay ?? 0}
-        entry={overrideEntry}
-        staffList={activeStaff}
-        onSave={handleOverrideSave}
-        onClose={() => setOverrideDay(null)}
-      />
     </div>
   );
 }

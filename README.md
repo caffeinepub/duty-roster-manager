@@ -1,2 +1,7 @@
-# duty-roster-manager
-Exported from Caffeine project: Duty Roster Manager
+## 
+
+This source code has been exported from [Caffeine](https://caffeine.ai/)
+
+### Coming Soon
+
+We are working on tools to help you build locally and deploy your apps back to caffeine.

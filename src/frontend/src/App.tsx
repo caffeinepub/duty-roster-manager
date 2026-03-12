@@ -1,24 +1,17 @@
 import { Toaster } from "@/components/ui/sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Calendar, CalendarOff, ClipboardList, Users } from "lucide-react";
 import { HolidaysTab } from "./components/HolidaysTab";
 import { LeavesTab } from "./components/LeavesTab";
 import { PersonnelTab } from "./components/PersonnelTab";
 import { RosterTab } from "./components/RosterTab";
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { staleTime: 1000 * 30, retry: 1 },
-  },
-});
-
 function AppShell() {
   const year = new Date().getFullYear();
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      <header className="border-b bg-card shadow-xs sticky top-0 z-10">
+      <header className="border-b bg-card shadow-xs sticky top-0 z-10 print:hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-md bg-primary flex items-center justify-center">
@@ -36,16 +29,16 @@ function AppShell() {
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6">
-        <Tabs defaultValue="roster" className="space-y-6">
-          <TabsList className="bg-muted/60 p-1 h-auto gap-0.5">
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 print:max-w-none print:px-0 print:py-0">
+        <Tabs defaultValue="personnel" className="space-y-6">
+          <TabsList className="bg-muted/60 p-1 h-auto gap-0.5 print:hidden">
             <TabsTrigger
               value="personnel"
               data-ocid="nav.personnel.tab"
               className="flex items-center gap-2 data-[state=active]:bg-card data-[state=active]:shadow-xs"
             >
               <Users className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Personnel</span>
+              <span>Personnel</span>
             </TabsTrigger>
             <TabsTrigger
               value="leaves"
@@ -53,7 +46,7 @@ function AppShell() {
               className="flex items-center gap-2 data-[state=active]:bg-card data-[state=active]:shadow-xs"
             >
               <CalendarOff className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Leaves & Requests</span>
+              <span>Leaves & Requests</span>
             </TabsTrigger>
             <TabsTrigger
               value="holidays"
@@ -61,7 +54,7 @@ function AppShell() {
               className="flex items-center gap-2 data-[state=active]:bg-card data-[state=active]:shadow-xs"
             >
               <Calendar className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Holidays</span>
+              <span>Holidays</span>
             </TabsTrigger>
             <TabsTrigger
               value="roster"
@@ -69,7 +62,7 @@ function AppShell() {
               className="flex items-center gap-2 data-[state=active]:bg-card data-[state=active]:shadow-xs"
             >
               <ClipboardList className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Roster</span>
+              <span>Roster</span>
             </TabsTrigger>
           </TabsList>
 
@@ -88,7 +81,7 @@ function AppShell() {
         </Tabs>
       </main>
 
-      <footer className="border-t bg-card py-4">
+      <footer className="border-t bg-card py-4 print:hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">
             &copy; {year}. Built with ❤️ using{" "}
@@ -113,9 +106,5 @@ function AppShell() {
 }
 
 export default function App() {
-  return (
-    <QueryClientProvider client={queryClient}>
-      <AppShell />
-    </QueryClientProvider>
-  );
+  return <AppShell />;
 }

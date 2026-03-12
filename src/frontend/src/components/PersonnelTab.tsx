@@ -1,3 +1,14 @@
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -6,6 +17,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,7 +28,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -25,282 +36,295 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Loader2, Pencil, Plus, Trash2, UserCheck, UserX } from "lucide-react";
+import { useLocalStorage } from "@/hooks/useLocalStorage";
+import type { Role, StaffMember } from "@/types";
+import { Pencil, PlusCircle, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import type { Staff } from "../backend.d";
-import {
-  useAddStaff,
-  useDeleteStaff,
-  useListStaff,
-  useUpdateStaff,
-} from "../hooks/useQueries";
 
-const ROLE_LABELS: Record<string, string> = {
-  PG: "PG (First Layer)",
-  Registrar: "Registrar (Second Layer)",
-  JC: "JC (Second + Third Layer)",
-  SC: "SC (Third Layer)",
+const ROLE_LABELS: Record<Role, string> = {
+  PG: "PG (Postgraduate)",
+  Registrar: "Registrar",
+  JC: "JC (Junior Consultant)",
+  SC: "SC (Senior Consultant)",
 };
 
-const ROLE_BADGE_CLASS: Record<string, string> = {
+const ROLE_COLORS: Record<Role, string> = {
   PG: "pg-badge",
   Registrar: "second-badge",
   JC: "third-badge",
-  SC: "bg-purple-100 text-purple-800",
+  SC: "third-badge",
 };
 
-function StaffDialog({
-  open,
-  onClose,
-  initial,
-}: {
-  open: boolean;
-  onClose: () => void;
-  initial?: Staff;
-}) {
-  const addStaff = useAddStaff();
-  const updateStaff = useUpdateStaff();
-  const isEdit = !!initial;
-
-  const [name, setName] = useState(initial?.name ?? "");
-  const [role, setRole] = useState(initial?.role ?? "PG");
-  const [active, setActive] = useState(initial?.active ?? true);
-
-  const isPending = addStaff.isPending || updateStaff.isPending;
-
-  const handleSave = async () => {
-    if (!name.trim()) {
-      toast.error("Name is required");
-      return;
-    }
-    const staff: Staff = {
-      id: initial?.id ?? crypto.randomUUID(),
-      name: name.trim(),
-      role,
-      active,
-    };
-    try {
-      if (isEdit) {
-        await updateStaff.mutateAsync(staff);
-        toast.success("Staff member updated");
-      } else {
-        await addStaff.mutateAsync(staff);
-        toast.success("Staff member added");
-      }
-      onClose();
-    } catch {
-      toast.error("Failed to save staff member");
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent data-ocid="personnel.dialog" className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="font-display">
-            {isEdit ? "Edit Staff Member" : "Add Staff Member"}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="staff-name">Full Name</Label>
-            <Input
-              id="staff-name"
-              data-ocid="personnel.name.input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Dr. Jane Smith"
-              onKeyDown={(e) => e.key === "Enter" && handleSave()}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Role</Label>
-            <Select value={role} onValueChange={setRole}>
-              <SelectTrigger data-ocid="personnel.role.select">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="PG">PG — First Layer</SelectItem>
-                <SelectItem value="Registrar">
-                  Registrar — Second Layer
-                </SelectItem>
-                <SelectItem value="JC">
-                  Junior Consultant — Second + Third Layer
-                </SelectItem>
-                <SelectItem value="SC">
-                  Senior Consultant — Third Layer
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex items-center gap-3">
-            <Switch
-              id="staff-active"
-              data-ocid="personnel.active.switch"
-              checked={active}
-              onCheckedChange={setActive}
-            />
-            <Label htmlFor="staff-active">Active</Label>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button
-            variant="outline"
-            data-ocid="personnel.cancel_button"
-            onClick={onClose}
-          >
-            Cancel
-          </Button>
-          <Button
-            data-ocid="personnel.save_button"
-            onClick={handleSave}
-            disabled={isPending}
-          >
-            {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {isEdit ? "Update" : "Add Staff"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+function genId(): string {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
 export function PersonnelTab() {
-  const { data: staffList = [], isLoading } = useListStaff();
-  const deleteStaff = useDeleteStaff();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<Staff | undefined>();
+  const [staff, setStaff] = useLocalStorage<StaffMember[]>(
+    "duty_roster_staff",
+    [],
+  );
+  const [addOpen, setAddOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<StaffMember | null>(null);
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<Role>("PG");
 
-  const openAdd = () => {
-    setEditTarget(undefined);
-    setDialogOpen(true);
+  const resetForm = () => {
+    setName("");
+    setRole("PG");
   };
 
-  const openEdit = (s: Staff) => {
-    setEditTarget(s);
-    setDialogOpen(true);
-  };
-
-  const handleDelete = async (id: string) => {
-    try {
-      await deleteStaff.mutateAsync(id);
-      toast.success("Staff member removed");
-    } catch {
-      toast.error("Failed to remove staff member");
+  const handleAdd = () => {
+    if (!name.trim()) {
+      toast.error("Please enter a name");
+      return;
     }
+    const member: StaffMember = { id: genId(), name: name.trim(), role };
+    setStaff((prev) => [...prev, member]);
+    toast.success(`${member.name} added`);
+    setAddOpen(false);
+    resetForm();
+  };
+
+  const openEdit = (m: StaffMember) => {
+    setEditTarget(m);
+    setName(m.name);
+    setRole(m.role);
+    setEditOpen(true);
+  };
+
+  const handleEdit = () => {
+    if (!name.trim() || !editTarget) {
+      toast.error("Please enter a name");
+      return;
+    }
+    setStaff((prev) =>
+      prev.map((s) =>
+        s.id === editTarget.id ? { ...s, name: name.trim(), role } : s,
+      ),
+    );
+    toast.success("Staff member updated");
+    setEditOpen(false);
+    setEditTarget(null);
+    resetForm();
+  };
+
+  const handleDelete = (id: string) => {
+    setStaff((prev) => prev.filter((s) => s.id !== id));
+    toast.success("Staff member removed");
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-display font-semibold tracking-tight">
-            Personnel
-          </h2>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Manage staff members and their duty layer assignments
+          <h2 className="font-display text-xl font-semibold">Personnel</h2>
+          <p className="text-sm text-muted-foreground">
+            {staff.length} staff member{staff.length !== 1 ? "s" : ""}
           </p>
         </div>
-        <Button data-ocid="personnel.add_button" onClick={openAdd}>
-          <Plus className="h-4 w-4 mr-2" />
-          Add Staff
-        </Button>
+        <Dialog
+          open={addOpen}
+          onOpenChange={(open) => {
+            setAddOpen(open);
+            if (!open) resetForm();
+          }}
+        >
+          <DialogTrigger asChild>
+            <Button data-ocid="personnel.primary_button">
+              <PlusCircle className="h-4 w-4 mr-2" /> Add Staff
+            </Button>
+          </DialogTrigger>
+          <DialogContent data-ocid="personnel.dialog">
+            <DialogHeader>
+              <DialogTitle>Add Staff Member</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="add-name">Full Name</Label>
+                <Input
+                  id="add-name"
+                  data-ocid="personnel.input"
+                  placeholder="Dr. Jane Smith"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Role</Label>
+                <Select value={role} onValueChange={(v) => setRole(v as Role)}>
+                  <SelectTrigger data-ocid="personnel.select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(ROLE_LABELS) as Role[]).map((r) => (
+                      <SelectItem key={r} value={r}>
+                        {ROLE_LABELS[r]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setAddOpen(false)}
+                data-ocid="personnel.cancel_button"
+              >
+                Cancel
+              </Button>
+              <Button onClick={handleAdd} data-ocid="personnel.submit_button">
+                Add Staff
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
 
-      <div className="rounded-lg border bg-card shadow-card overflow-hidden">
-        <Table data-ocid="personnel.table">
-          <TableHeader>
-            <TableRow className="bg-muted/40">
-              <TableHead className="font-semibold">Name</TableHead>
-              <TableHead className="font-semibold">Role</TableHead>
-              <TableHead className="font-semibold">Layer</TableHead>
-              <TableHead className="font-semibold">Status</TableHead>
-              <TableHead className="w-24 font-semibold">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading && (
-              <TableRow>
-                <TableCell colSpan={5} className="text-center py-12">
-                  <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
-                </TableCell>
+      {staff.length === 0 ? (
+        <div
+          data-ocid="personnel.empty_state"
+          className="flex flex-col items-center justify-center py-16 text-center border-2 border-dashed rounded-lg"
+        >
+          <Users className="h-10 w-10 text-muted-foreground/40 mb-3" />
+          <p className="text-muted-foreground font-medium">
+            No staff added yet.
+          </p>
+          <p className="text-sm text-muted-foreground mt-1">
+            Add your first staff member above.
+          </p>
+        </div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <Table data-ocid="personnel.table">
+            <TableHeader>
+              <TableRow className="bg-muted/40">
+                <TableHead>Name</TableHead>
+                <TableHead>Role</TableHead>
+                <TableHead className="w-28 text-right">Actions</TableHead>
               </TableRow>
-            )}
-            {!isLoading && staffList.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={5} className="text-center py-12">
-                  <div data-ocid="personnel.empty_state" className="space-y-1">
-                    <p className="font-medium text-muted-foreground">
-                      No staff members yet
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      Add your first staff member to get started
-                    </p>
-                  </div>
-                </TableCell>
-              </TableRow>
-            )}
-            {staffList.map((s, i) => (
-              <TableRow key={s.id} data-ocid={`personnel.item.${i + 1}`}>
-                <TableCell className="font-medium">{s.name}</TableCell>
-                <TableCell>
-                  <Badge
-                    className={`${ROLE_BADGE_CLASS[s.role] ?? ""} border-0 text-xs font-medium`}
-                    variant="outline"
-                  >
-                    {s.role}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {ROLE_LABELS[s.role] ?? s.role}
-                </TableCell>
-                <TableCell>
-                  {s.active ? (
-                    <span className="inline-flex items-center gap-1.5 text-sm font-medium text-emerald-700">
-                      <UserCheck className="h-3.5 w-3.5" />
-                      Active
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-                      <UserX className="h-3.5 w-3.5" />
-                      Inactive
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      data-ocid={`personnel.edit_button.${i + 1}`}
-                      onClick={() => openEdit(s)}
-                      className="h-8 w-8 p-0"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      data-ocid={`personnel.delete_button.${i + 1}`}
-                      onClick={() => handleDelete(s.id)}
-                      className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+            </TableHeader>
+            <TableBody>
+              {staff.map((m, i) => (
+                <TableRow key={m.id} data-ocid={`personnel.item.${i + 1}`}>
+                  <TableCell className="font-medium">{m.name}</TableCell>
+                  <TableCell>
+                    <Badge className={ROLE_COLORS[m.role]}>{m.role}</Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        onClick={() => openEdit(m)}
+                        data-ocid={`personnel.edit_button.${i + 1}`}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            data-ocid={`personnel.delete_button.${i + 1}`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent data-ocid="personnel.dialog">
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>
+                              Remove {m.name}?
+                            </AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This will remove the staff member and may affect
+                              existing roster data.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel data-ocid="personnel.cancel_button">
+                              Cancel
+                            </AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => handleDelete(m.id)}
+                              data-ocid="personnel.confirm_button"
+                            >
+                              Remove
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
 
-      <StaffDialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        initial={editTarget}
-      />
+      {/* Edit Dialog */}
+      <Dialog
+        open={editOpen}
+        onOpenChange={(open) => {
+          setEditOpen(open);
+          if (!open) {
+            setEditTarget(null);
+            resetForm();
+          }
+        }}
+      >
+        <DialogContent data-ocid="personnel.dialog">
+          <DialogHeader>
+            <DialogTitle>Edit Staff Member</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-name">Full Name</Label>
+              <Input
+                id="edit-name"
+                data-ocid="personnel.input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleEdit()}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Role</Label>
+              <Select value={role} onValueChange={(v) => setRole(v as Role)}>
+                <SelectTrigger data-ocid="personnel.select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(ROLE_LABELS) as Role[]).map((r) => (
+                    <SelectItem key={r} value={r}>
+                      {ROLE_LABELS[r]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditOpen(false)}
+              data-ocid="personnel.cancel_button"
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleEdit} data-ocid="personnel.save_button">
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
