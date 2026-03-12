@@ -56,6 +56,23 @@ const ROLE_COLORS: Record<Role, string> = {
   SC: "third-badge",
 };
 
+const DEFAULT_STAFF: StaffMember[] = [
+  { id: "seed-sc-1", name: "Dr Sajana", role: "SC" },
+  { id: "seed-sc-2", name: "Dr Pradeep", role: "SC" },
+  { id: "seed-jc-1", name: "Dr Garima", role: "JC" },
+  { id: "seed-jc-2", name: "Dr Suman", role: "JC" },
+  { id: "seed-jc-3", name: "Dr Karthik", role: "JC" },
+  { id: "seed-reg-1", name: "Dr Gowry", role: "Registrar" },
+  { id: "seed-reg-2", name: "Dr Vaishnavi", role: "Registrar" },
+  { id: "seed-reg-3", name: "Dr Manju Shree", role: "Registrar" },
+  { id: "seed-reg-4", name: "Dr Tilak", role: "Registrar" },
+  { id: "seed-reg-5", name: "Dr Namitha", role: "Registrar" },
+  { id: "seed-pg-1", name: "Dr Vignesh", role: "PG" },
+  { id: "seed-pg-2", name: "Dr Deepali", role: "PG" },
+  { id: "seed-pg-3", name: "Dr Deepika", role: "PG" },
+  { id: "seed-pg-4", name: "Dr Ashlesha", role: "PG" },
+  { id: "seed-pg-5", name: "Dr Devika", role: "PG" },
+];
 function genId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
@@ -63,7 +80,7 @@ function genId(): string {
 export function PersonnelTab() {
   const [staff, setStaff] = useLocalStorage<StaffMember[]>(
     "duty_roster_staff",
-    [],
+    DEFAULT_STAFF,
   );
   const [addOpen, setAddOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
