@@ -147,7 +147,7 @@ function OverrideCell({
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {/* Only show Unassigned option when SC is NOT required (i.e. JC in layer 2) */}
+        {/* Only show Unassigned option when SC is NOT required (i.e. JC or Namitha in layer 2) */}
         {!locked && <SelectItem value="__none__">— Unassigned —</SelectItem>}
         {sorted.map((s) => (
           <SelectItem key={s.id} value={s.name}>
@@ -570,11 +570,14 @@ export function RosterTab() {
                   const isPre = !isSpecial && isPreHoliday(row.date, holidays);
                   const day = new Date(`${row.date}T00:00:00`).getDate();
 
-                  // Determine if the layer-2 person is a Registrar
+                  // Determine if the layer-2 person is a Registrar (excluding Namitha)
+                  // Namitha is treated like a JC — no SC required when she is on duty
                   const layer2Staff = staff.find(
                     (s) => s.name === row.registrarJC,
                   );
-                  const registrarInLayer2 = layer2Staff?.role === "Registrar";
+                  const registrarInLayer2 =
+                    layer2Staff?.role === "Registrar" &&
+                    layer2Staff?.name !== "Dr Namitha";
 
                   return (
                     <tr

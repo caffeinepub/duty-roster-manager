@@ -308,15 +308,18 @@ export function generateRoster(
       }
     }
 
-    // Determine if a JC is covering layer 2
+    // Determine if a JC (or Namitha) is covering layer 2
+    // Namitha is treated like a JC for third layer purposes — no SC required
     const regStaff = regId ? staffById.get(regId) : null;
-    const jcCoversLayer2 = regStaff?.role === "JC";
-    const registrarCoversLayer2 = regStaff?.role === "Registrar";
+    const namithaInLayer2 = regStaff?.name === "Dr Namitha";
+    const jcCoversLayer2 = regStaff?.role === "JC" || namithaInLayer2;
+    const registrarCoversLayer2 =
+      regStaff?.role === "Registrar" && !namithaInLayer2;
     if (jcCoversLayer2) jcInLayer2Dates.add(date);
 
     // Assign SC
-    // RULE: When a Registrar covers layer 2, SC is MANDATORY and cannot be cleared.
-    //       Clearing SC (overrideSc === null) is only valid when a JC covers layer 2.
+    // RULE: When a Registrar (not Namitha) covers layer 2, SC is MANDATORY and cannot be cleared.
+    //       Clearing SC (overrideSc === null) is only valid when a JC or Namitha covers layer 2.
     let scName: string | null = null;
     let scId: string | null = null;
 
@@ -325,13 +328,13 @@ export function generateRoster(
       scName = overrideSc;
       scId = staff.find((s) => s.name === overrideSc)?.id ?? null;
     } else if (overrideSc === null && !registrarCoversLayer2) {
-      // Clearing SC is only valid if a JC is covering layer 2
+      // Clearing SC is only valid if a JC or Namitha is covering layer 2
       scName = null;
       scId = null;
     } else {
       // Auto-assign SC if:
       //   (a) no override at all, OR
-      //   (b) override tried to clear SC but a Registrar is on duty (override silently dropped)
+      //   (b) override tried to clear SC but a Registrar (not Namitha) is on duty (override silently dropped)
       if (!jcCoversLayer2) {
         const eligible = sortByFairness(
           scsJCs.filter(
@@ -429,11 +432,15 @@ export function generateRoster(
     const jcInLayer2 = jcInLayer2Dates.has(row.date);
     if (!row.seniorConsultant && !jcInLayer2) flags.push("Missing SC");
 
-    // Extra safety: if SC is missing but a Registrar is on duty, flag it
+    // Extra safety: if SC is missing but a Registrar (not Namitha) is on duty, flag it
     const layer2StaffMember = row.registrarJC
       ? staff.find((s) => s.name === row.registrarJC)
       : null;
-    if (!row.seniorConsultant && layer2StaffMember?.role === "Registrar") {
+    if (
+      !row.seniorConsultant &&
+      layer2StaffMember?.role === "Registrar" &&
+      layer2StaffMember?.name !== "Dr Namitha"
+    ) {
       flags.push("Missing SC (required when Registrar on duty)");
     }
 
