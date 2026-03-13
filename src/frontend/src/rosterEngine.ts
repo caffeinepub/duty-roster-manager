@@ -76,9 +76,10 @@ export function generateRoster(
   const lastDutyDate = new Map<string, string | null>();
   const dutyCount = new Map<string, number>();
   const holidayDutyCount = new Map<string, number>();
-  // Track Friday and Saturday duties per person (max 1 each)
   const fridayDutyCount = new Map<string, number>();
   const saturdayDutyCount = new Map<string, number>();
+  // Track JC appearances in the second layer (Registrar/JC slot)
+  const jcLayer2Count = new Map<string, number>();
 
   for (const s of staff) {
     lastDutyDate.set(s.id, null);
@@ -86,6 +87,7 @@ export function generateRoster(
     holidayDutyCount.set(s.id, 0);
     fridayDutyCount.set(s.id, 0);
     saturdayDutyCount.set(s.id, 0);
+    if (s.role === "JC") jcLayer2Count.set(s.id, 0);
   }
 
   const daysBetween = (a: string, b: string): number => {
@@ -106,11 +108,9 @@ export function generateRoster(
   const withinHolLimit = (s: StaffMember): boolean =>
     (holidayDutyCount.get(s.id) ?? 0) < 1;
 
-  // Friday duty: within fair share (max 1 per person)
   const withinFridayLimit = (s: StaffMember): boolean =>
     (fridayDutyCount.get(s.id) ?? 0) < 1;
 
-  // Saturday duty: within max 1 per person
   const withinSaturdayLimit = (s: StaffMember): boolean =>
     (saturdayDutyCount.get(s.id) ?? 0) < 1;
 
@@ -118,11 +118,11 @@ export function generateRoster(
     s: StaffMember,
     date: string,
     isHolOrPre: boolean,
-    excludeId?: string,
+    excludeIds?: string[],
     isFriday?: boolean,
     isSaturday?: boolean,
   ): boolean => {
-    if (s.id === excludeId) return false;
+    if (excludeIds?.includes(s.id)) return false;
     if (isOnLeave(s, date)) return false;
     if (!hasGap(s, date)) return false;
     if (isHolOrPre && !withinHolLimit(s)) return false;
@@ -131,10 +131,12 @@ export function generateRoster(
     return true;
   };
 
+  // forLayer2: when true, JC candidates are sorted by jcLayer2Count first
   const sortByFairness = (
     candidates: StaffMember[],
     date: string,
     isFriday?: boolean,
+    forLayer2?: boolean,
   ): StaffMember[] => {
     return candidates.slice().sort((a, b) => {
       // Duty requests get priority
@@ -145,6 +147,12 @@ export function generateRoster(
       const ndA = nodutyMap.get(a.id)?.has(date) ? 1 : 0;
       const ndB = nodutyMap.get(b.id)?.has(date) ? 1 : 0;
       if (ndA !== ndB) return ndA - ndB;
+      // For layer 2 slot: if both are JCs, sort by jcLayer2Count first
+      if (forLayer2 && a.role === "JC" && b.role === "JC") {
+        const l2A = jcLayer2Count.get(a.id) ?? 0;
+        const l2B = jcLayer2Count.get(b.id) ?? 0;
+        if (l2A !== l2B) return l2A - l2B;
+      }
       // For Fridays: prefer those with fewer Friday duties (equal distribution)
       if (isFriday) {
         const fdA = fridayDutyCount.get(a.id) ?? 0;
@@ -157,17 +165,19 @@ export function generateRoster(
   };
 
   // Fallback assignment: tries progressively relaxed constraints
+  // excludeIds: array of staff IDs to exclude from pool
   const assignWithFallback = (
     pool: StaffMember[],
     date: string,
     isHolOrPre: boolean,
-    excludeId: string | undefined,
+    excludeIds: string[],
     slotLabel: string,
     isFriday?: boolean,
     isSaturday?: boolean,
+    forLayer2?: boolean,
   ): { id: string; name: string; extraFlags: string[] } | null => {
     const available = pool.filter(
-      (s) => s.id !== excludeId && !isOnLeave(s, date),
+      (s) => !excludeIds.includes(s.id) && !isOnLeave(s, date),
     );
     if (available.length === 0) return null;
 
@@ -184,6 +194,7 @@ export function generateRoster(
       ),
       date,
       isFriday,
+      forLayer2,
     );
     if (fully.length > 0) {
       return { id: fully[0].id, name: fully[0].name, extraFlags };
@@ -196,6 +207,7 @@ export function generateRoster(
       ),
       date,
       isFriday,
+      forLayer2,
     );
     if (ignoreFriSat.length > 0) {
       const chosen = ignoreFriSat[0];
@@ -209,6 +221,7 @@ export function generateRoster(
       available.filter((s) => hasGap(s, date)),
       date,
       isFriday,
+      forLayer2,
     );
     if (ignoreHol.length > 0) {
       const chosen = ignoreHol[0];
@@ -221,6 +234,7 @@ export function generateRoster(
       available.filter((s) => !isHolOrPre || withinHolLimit(s)),
       date,
       isFriday,
+      forLayer2,
     );
     if (ignoreGap.length > 0) {
       const chosen = ignoreGap[0];
@@ -229,7 +243,7 @@ export function generateRoster(
     }
 
     // Try 5: ignore all constraints except leave
-    const anyAvailable = sortByFairness(available, date, isFriday);
+    const anyAvailable = sortByFairness(available, date, isFriday, forLayer2);
     const chosen = anyAvailable[0];
     extraFlags.push(`${slotLabel} forced assignment`);
     return { id: chosen.id, name: chosen.name, extraFlags };
@@ -273,7 +287,7 @@ export function generateRoster(
         pgs,
         date,
         isHolOrPre,
-        undefined,
+        [],
         "PG",
         isFriday,
         isSaturday,
@@ -285,7 +299,7 @@ export function generateRoster(
       }
     }
 
-    // Assign Registrar/JC
+    // Assign Registrar/JC (layer 2) — sort JCs by jcLayer2Count for equal distribution
     let regName: string | null = null;
     let regId: string | null = null;
     if (overrideReg !== undefined) {
@@ -296,10 +310,11 @@ export function generateRoster(
         registrarsJCs,
         date,
         isHolOrPre,
-        pgId ?? undefined,
+        pgId ? [pgId] : [],
         "Registrar/JC",
         isFriday,
         isSaturday,
+        true, // forLayer2: enable JC layer-2 fairness sorting
       );
       if (result) {
         regId = result.id;
@@ -308,15 +323,21 @@ export function generateRoster(
       }
     }
 
-    // Determine if a JC is covering layer 2
+    // Determine if a JC or Registrar is covering layer 2
     const regStaff = regId ? staffById.get(regId) : null;
     const jcCoversLayer2 = regStaff?.role === "JC";
     const registrarCoversLayer2 = regStaff?.role === "Registrar";
     if (jcCoversLayer2) jcInLayer2Dates.add(date);
 
-    // Assign SC
-    // RULE: When a Registrar covers layer 2, SC is MANDATORY and cannot be cleared.
-    //       Clearing SC (overrideSc === null) is only valid when a JC covers layer 2.
+    // Update jcLayer2Count for the assigned person if they are a JC and no override
+    if (overrideReg === undefined && regId && jcCoversLayer2) {
+      jcLayer2Count.set(regId, (jcLayer2Count.get(regId) ?? 0) + 1);
+    }
+
+    // Assign SC (layer 3)
+    // HARD RULE: When a Registrar covers layer 2, SC/JC MUST be assigned.
+    //            Use assignWithFallback to guarantee someone is always placed.
+    //            Clearing SC (overrideSc === null) is only valid when a JC covers layer 2.
     let scName: string | null = null;
     let scId: string | null = null;
 
@@ -333,24 +354,42 @@ export function generateRoster(
       //   (a) no override at all, OR
       //   (b) override tried to clear SC but a Registrar is on duty (override silently dropped)
       if (!jcCoversLayer2) {
-        const eligible = sortByFairness(
-          scsJCs.filter(
-            (s) =>
-              isEligible(
-                s,
-                date,
-                isHolOrPre,
-                regId ?? undefined,
-                isFriday,
-                isSaturday,
-              ) && s.id !== pgId,
-          ),
-          date,
-          isFriday,
-        );
-        if (eligible.length > 0) {
-          scId = eligible[0].id;
-          scName = eligible[0].name;
+        // HARD CONSTRAINT: if Registrar on duty, use assignWithFallback to guarantee assignment
+        const excludeIds = [pgId, regId].filter(Boolean) as string[];
+        if (registrarCoversLayer2) {
+          const result = assignWithFallback(
+            scsJCs,
+            date,
+            isHolOrPre,
+            excludeIds,
+            "SC (required when Registrar on duty)",
+            isFriday,
+            isSaturday,
+          );
+          if (result) {
+            scId = result.id;
+            scName = result.name;
+            dayFlags.push(...result.extraFlags);
+          } else {
+            // All SC/JC are on leave — flag as error
+            dayFlags.push(
+              "Missing SC (required when Registrar on duty — all SC/JC unavailable)",
+            );
+          }
+        } else {
+          // No Registrar on duty, no JC on layer 2 either (e.g. no one assigned yet)
+          // Use best-effort assignment without forced fallback
+          const eligible = sortByFairness(
+            scsJCs.filter((s) =>
+              isEligible(s, date, isHolOrPre, excludeIds, isFriday, isSaturday),
+            ),
+            date,
+            isFriday,
+          );
+          if (eligible.length > 0) {
+            scId = eligible[0].id;
+            scName = eligible[0].name;
+          }
         }
       }
     }
